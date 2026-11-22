@@ -138,12 +138,11 @@ async fn terminate_process_group(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::time::Instant;
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn hard_kill_switch_terminates_long_running_process_within_grace() {
         let cancel = CancellationToken::new();

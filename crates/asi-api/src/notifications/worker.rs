@@ -17,18 +17,20 @@ pub const RETRY_DELAYS_SECONDS: [i64; 5] = [10, 30, 120, 600, 1800];
 struct PendingDeliveryRow {
     delivery_id: Uuid,
     attempt_count: i32,
+    event_type: String,
+    custom_payload: Option<serde_json::Value>,
     channel_type: String,
     config_public: serde_json::Value,
     secret_ciphertext: Option<Vec<u8>>,
     secret_nonce: Option<Vec<u8>>,
-    diff_event_id: Uuid,
-    host_id: Uuid,
-    asset_group_name: String,
-    ip_addr: IpNetwork,
-    event_kind: String,
-    severity: String,
-    bullet_items: serde_json::Value,
-    detected_at: DateTime<Utc>,
+    diff_event_id: Option<Uuid>,
+    host_id: Option<Uuid>,
+    asset_group_name: Option<String>,
+    ip_addr: Option<IpNetwork>,
+    event_kind: Option<String>,
+    severity: Option<String>,
+    bullet_items: Option<serde_json::Value>,
+    detected_at: Option<DateTime<Utc>>,
 }
 
 #[must_use]
@@ -47,23 +49,74 @@ pub async fn enqueue_notifications_for_diff(
     event_kind: DiffEventKind,
 ) -> Result<(), sqlx::Error> {
     let is_confirmed = event_kind == DiffEventKind::ConfirmedChange;
+    let event_type = if is_confirmed {
+        "diff.confirmed_change"
+    } else {
+        "diff.active_variance"
+    };
     sqlx::query(
         r#"
-        INSERT INTO notification_deliveries (channel_id, diff_event_id, status, attempt_count, next_retry_at)
-        SELECT id, $1, 'pending', 0, NOW()
-        FROM notification_channels
-        WHERE is_enabled = TRUE
-          AND (asset_group_id IS NULL OR asset_group_id = $2)
+        INSERT INTO notification_deliveries (
+            channel_id, diff_event_id, event_type, status, attempt_count, next_retry_at
+        )
+        SELECT nc.id, $1, $4, 'pending', 0, NOW()
+        FROM notification_channels nc
+        INNER JOIN diff_events de ON de.id = $1
+        WHERE nc.is_enabled = TRUE
+          AND (nc.asset_group_id IS NULL OR nc.asset_group_id = $2)
           AND (
-              ($3 = TRUE AND notify_on_confirmed = TRUE)
-              OR ($3 = FALSE AND notify_on_variance = TRUE)
+              (($3 = TRUE AND nc.notify_on_confirmed = TRUE) AND 'diff.confirmed_change' = ANY(nc.subscribed_events))
+              OR (($3 = FALSE AND nc.notify_on_variance = TRUE) AND 'diff.active_variance' = ANY(nc.subscribed_events))
+              OR (
+                  'host.new_discovered' = ANY(nc.subscribed_events)
+                  AND de.bullet_items @> '[{"key": "host_discovered"}]'::jsonb
+              )
+              OR (
+                  'host.admin_panel_detected' = ANY(nc.subscribed_events)
+                  AND de.bullet_items @> '[{"key": "admin_panel_detected"}]'::jsonb
+              )
+              OR (
+                  'host.anomaly_detected' = ANY(nc.subscribed_events)
+                  AND (
+                      de.bullet_items @> '[{"key": "probable_tarpit_detected"}]'::jsonb
+                      OR de.bullet_items @> '[{"key": "diurnal_variance"}]'::jsonb
+                  )
+              )
           )
         "#,
     )
     .bind(diff_event_id)
     .bind(asset_group_id)
     .bind(is_confirmed)
+    .bind(event_type)
     .execute(&mut *conn)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn enqueue_webhook_event(
+    pool: &PgPool,
+    asset_group_id: Option<Uuid>,
+    event_type: &str,
+    payload: serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO notification_deliveries (
+            channel_id, diff_event_id, event_type, custom_payload, status, attempt_count, next_retry_at
+        )
+        SELECT id, NULL, $1, $2, 'pending', 0, NOW()
+        FROM notification_channels
+        WHERE is_enabled = TRUE
+          AND $1 = ANY(subscribed_events)
+          AND (asset_group_id IS NULL OR $3::uuid IS NULL OR asset_group_id = $3)
+        "#,
+    )
+    .bind(event_type)
+    .bind(payload)
+    .bind(asset_group_id)
+    .execute(pool)
     .await?;
 
     Ok(())
@@ -86,15 +139,15 @@ pub fn spawn_notification_worker(state: AppState) -> tokio::task::JoinHandle<()>
 async fn process_pending_deliveries(state: &AppState, pool: &PgPool) -> Result<(), String> {
     let rows: Vec<PendingDeliveryRow> = sqlx::query_as(
         r#"
-        SELECT nd.id AS delivery_id, nd.attempt_count,
+        SELECT nd.id AS delivery_id, nd.attempt_count, nd.event_type, nd.custom_payload,
                nc.channel_type, nc.config_public, nc.secret_ciphertext, nc.secret_nonce,
                de.id AS diff_event_id, de.host_id, ag.name AS asset_group_name,
                h.ip_addr, de.event_kind, de.severity, de.bullet_items, de.detected_at
         FROM notification_deliveries nd
         INNER JOIN notification_channels nc ON nc.id = nd.channel_id
-        INNER JOIN diff_events de ON de.id = nd.diff_event_id
-        INNER JOIN hosts h ON h.id = de.host_id
-        INNER JOIN asset_groups ag ON ag.id = h.asset_group_id
+        LEFT JOIN diff_events de ON de.id = nd.diff_event_id
+        LEFT JOIN hosts h ON h.id = de.host_id
+        LEFT JOIN asset_groups ag ON ag.id = h.asset_group_id
         WHERE nd.status = 'pending'
           AND (nd.next_retry_at IS NULL OR nd.next_retry_at <= NOW())
         ORDER BY nd.created_at ASC
@@ -173,11 +226,6 @@ async fn dispatch_single_delivery(
 ) -> Result<(), String> {
     let channel_type = NotificationChannelType::from_db_str(&row.channel_type)
         .ok_or_else(|| format!("unknown channel_type '{}'", row.channel_type))?;
-    let event_kind = DiffEventKind::from_db_str(&row.event_kind)
-        .ok_or_else(|| format!("unknown event_kind '{}'", row.event_kind))?;
-    let severity = DiffSeverity::from_db_str(&row.severity).unwrap_or(DiffSeverity::Info);
-    let bullet_items: Vec<BulletItem> =
-        serde_json::from_value(row.bullet_items.clone()).unwrap_or_default();
 
     let decrypted_secret = match (&row.secret_ciphertext, &row.secret_nonce) {
         (Some(ct), Some(nonce)) => {
@@ -200,19 +248,59 @@ async fn dispatch_single_delivery(
     )
     .map_err(|e| e.to_string())?;
 
-    let msg = NotificationMessage {
-        delivery_id: row.delivery_id,
-        diff_event_id: row.diff_event_id,
-        asset_group_name: row.asset_group_name.clone(),
-        host_id: row.host_id,
-        ip_addr: row.ip_addr.ip(),
-        event_kind,
-        severity,
-        bullet_items,
-        detected_at: row.detected_at,
-    };
+    if let (
+        Some(diff_event_id),
+        Some(host_id),
+        Some(ip_addr),
+        Some(event_kind_str),
+        Some(detected_at),
+    ) = (
+        row.diff_event_id,
+        row.host_id,
+        row.ip_addr,
+        row.event_kind.as_deref(),
+        row.detected_at,
+    ) {
+        if row.custom_payload.is_none() {
+            let event_kind = DiffEventKind::from_db_str(event_kind_str)
+                .ok_or_else(|| format!("unknown event_kind '{event_kind_str}'"))?;
+            let severity = row
+                .severity
+                .as_deref()
+                .and_then(DiffSeverity::from_db_str)
+                .unwrap_or(DiffSeverity::Info);
+            let bullet_items: Vec<BulletItem> = row
+                .bullet_items
+                .as_ref()
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
 
-    sink.send(&msg).await.map_err(|e| e.to_string())
+            let msg = NotificationMessage {
+                delivery_id: row.delivery_id,
+                diff_event_id,
+                asset_group_name: row
+                    .asset_group_name
+                    .clone()
+                    .unwrap_or_else(|| "ASI".to_string()),
+                host_id,
+                ip_addr: ip_addr.ip(),
+                event_kind,
+                severity,
+                bullet_items,
+                detected_at,
+            };
+
+            return sink.send(&msg).await.map_err(|e| e.to_string());
+        }
+    }
+
+    let custom_payload = row
+        .custom_payload
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
+    sink.send_custom_event(&row.event_type, row.delivery_id, &custom_payload)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -3,12 +3,14 @@
 //! Wszystkie akcje mutujace wymagaja permisji ManageExternalIntegrations (Admin).
 
 use asi_common::defectdojo::{
-    DdFindingScope, DdLinkDto, DdOutboxItemDto, DdPushDiffResponse, DdSyncRequest, DdSyncResponse,
+    DdFindingPayloadOverride, DdFindingPreviewDto, DdFindingScope, DdLinkDto, DdOutboxItemDto,
+    DdPushDiffResponse, DdPushHostResponse, DdRetryOutboxResponse, DdSyncRequest, DdSyncResponse,
     DdTestConnectionResponse, DefectDojoConfigDto, UpdateDefectDojoConfigRequest,
 };
 use asi_common::error::{DomainError, ProblemDetails};
 use asi_common::pagination::{PaginatedResponse, PaginationMeta, PaginationQuery};
 use asi_common::rbac::Permission;
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -20,7 +22,10 @@ use crate::app::AppState;
 use crate::audit::{insert_audit_log, AuditRecord};
 use crate::error::AppError;
 use crate::integrations::defectdojo::DdClient;
-use crate::integrations::push::{audit_dd, enqueue_manual_sync, load_config, push_single_diff};
+use crate::integrations::push::{
+    audit_dd, build_diff_dd_preview, build_host_dd_preview, enqueue_manual_sync, push_single_diff,
+    push_single_host, save_diff_dd_override, save_host_dd_override,
+};
 use crate::routes::common::{extract_request_id, map_db_err, require_db};
 use crate::security::auth_extractor::AuthenticatedUser;
 
@@ -78,6 +83,9 @@ pub async fn get_defectdojo_config(
             let scope_raw: String = r.get("finding_scope");
             DefectDojoConfigDto {
                 base_url: r.get("base_url"),
+                asi_public_url: r
+                    .get::<Option<String>, _>("asi_public_url")
+                    .unwrap_or_default(),
                 finding_scope: DdFindingScope::from_db_str(&scope_raw)
                     .unwrap_or(DdFindingScope::Changes),
                 auto_push: r.get("auto_push"),
@@ -93,6 +101,7 @@ pub async fn get_defectdojo_config(
         }
         None => DefectDojoConfigDto {
             base_url: String::new(),
+            asi_public_url: String::new(),
             finding_scope: DdFindingScope::Changes,
             auto_push: true,
             pull_interval_minutes: 15,
@@ -197,6 +206,7 @@ pub async fn update_defectdojo_config(
             auto_push = COALESCE($5, defectdojo_config.auto_push),
             pull_interval_minutes = COALESCE($6, defectdojo_config.pull_interval_minutes),
             enabled = COALESCE($7, defectdojo_config.enabled),
+            last_error = NULL,
             updated_at = NOW()
         "#,
     )
@@ -265,6 +275,7 @@ pub async fn update_defectdojo_config(
     path = "/api/v1/integrations/defectdojo/test-connection",
     tag = "Integrations",
     security(("bearer_auth" = [])),
+    request_body(content = Option<UpdateDefectDojoConfigRequest>, description = "Optional unsaved base_url / api_key values to test before saving"),
     responses(
         (status = 200, description = "Connection test result", body = DdTestConnectionResponse)
     )
@@ -272,46 +283,117 @@ pub async fn update_defectdojo_config(
 pub async fn test_defectdojo_connection(
     auth: AuthenticatedUser,
     State(state): State<AppState>,
+    body: Bytes,
 ) -> Result<Json<DdTestConnectionResponse>, AppError> {
     let instance = "/api/v1/integrations/defectdojo/test-connection";
     auth.require(Permission::ManageExternalIntegrations, instance)?;
     let pool = require_db(&state, auth.request_id, instance)?;
 
-    let Some(cfg) = load_config(pool, &state.secret_box).await.map_err(|e| {
-        AppError::new(
-            DomainError::Internal(e),
-            auth.request_id,
-            Some(instance.to_string()),
-        )
-    })?
-    else {
+    let body_override: Option<UpdateDefectDojoConfigRequest> = if body.is_empty() {
+        None
+    } else {
+        Some(serde_json::from_slice(&body).map_err(|e| {
+            AppError::new(
+                DomainError::BadRequest(format!("Niepoprawny JSON żądania: {e}")),
+                auth.request_id,
+                Some(instance.to_string()),
+            )
+        })?)
+    };
+
+    let stored = sqlx::query(
+        "SELECT base_url, api_key_ciphertext, api_key_nonce FROM defectdojo_config WHERE id = TRUE",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| map_db_err(err, "dd config read failed", auth.request_id, instance))?;
+
+    let (stored_url, stored_key) = match stored {
+        Some(r) => {
+            let u: String = r.get("base_url");
+            let c: Option<Vec<u8>> = r.get("api_key_ciphertext");
+            let n: Option<Vec<u8>> = r.get("api_key_nonce");
+            let k = match (c, n) {
+                (Some(ct), Some(nc)) => state
+                    .secret_box
+                    .decrypt(&ct, &nc)
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            (u, k)
+        }
+        None => (String::new(), String::new()),
+    };
+
+    let effective_url = body_override
+        .as_ref()
+        .and_then(|o| o.base_url.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or(stored_url);
+    let effective_key = body_override
+        .as_ref()
+        .and_then(|o| o.api_key.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or(stored_key);
+
+    if effective_url.trim().is_empty() || effective_key.trim().is_empty() {
         return Ok(Json(DdTestConnectionResponse {
             ok: false,
-            base_url: String::new(),
+            base_url: effective_url,
             product_count: None,
-            error: Some("DefectDojo integration is disabled or API key is missing".to_string()),
+            error: Some(
+                "Brak Base URL lub API key (uzupełnij pola i zapisz albo podaj w formularzu)."
+                    .to_string(),
+            ),
         }));
+    }
+
+    let client = match DdClient::new(&effective_url, &effective_key) {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(Json(DdTestConnectionResponse {
+                ok: false,
+                base_url: effective_url,
+                product_count: None,
+                error: Some(e.to_string()),
+            }));
+        }
     };
-    let client = DdClient::new(&cfg.base_url, &cfg.api_key).map_err(|e| {
-        AppError::new(
-            DomainError::BadRequest(e.to_string()),
-            auth.request_id,
-            Some(instance.to_string()),
-        )
-    })?;
+
     match client.ping().await {
-        Ok(count) => Ok(Json(DdTestConnectionResponse {
-            ok: true,
-            base_url: cfg.base_url,
-            product_count: Some(count),
-            error: None,
-        })),
-        Err(e) => Ok(Json(DdTestConnectionResponse {
-            ok: false,
-            base_url: cfg.base_url,
-            product_count: None,
-            error: Some(e.to_string()),
-        })),
+        Ok(count) => {
+            let _ = sqlx::query(
+                "UPDATE defectdojo_config SET last_error = NULL, updated_at = NOW() WHERE id = TRUE AND last_error IS NOT NULL",
+            )
+            .execute(pool)
+            .await;
+            Ok(Json(DdTestConnectionResponse {
+                ok: true,
+                base_url: effective_url,
+                product_count: Some(count),
+                error: None,
+            }))
+        }
+        Err(e) => {
+            let _ = sqlx::query(
+                "UPDATE defectdojo_config SET last_error = $1, updated_at = NOW() WHERE id = TRUE",
+            )
+            .bind(&e)
+            .execute(pool)
+            .await;
+            Ok(Json(DdTestConnectionResponse {
+                ok: false,
+                base_url: effective_url,
+                product_count: None,
+                error: Some(e),
+            }))
+        }
     }
 }
 
@@ -345,12 +427,131 @@ pub async fn sync_defectdojo(
     Ok((StatusCode::ACCEPTED, Json(DdSyncResponse { enqueued })))
 }
 
+async fn read_asi_public_url(pool: &sqlx::PgPool) -> String {
+    sqlx::query_scalar::<_, String>(
+        "SELECT COALESCE(asi_public_url, '') FROM defectdojo_config WHERE id = TRUE",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_default()
+}
+
+fn parse_optional_override(
+    bytes: &[u8],
+    request_id: Option<Uuid>,
+    instance: &str,
+) -> Result<Option<DdFindingPayloadOverride>, AppError> {
+    let trimmed = std::str::from_utf8(bytes)
+        .map_err(|e| {
+            AppError::new(
+                DomainError::BadRequest(format!("invalid UTF-8 body: {e}")),
+                request_id,
+                Some(instance.to_string()),
+            )
+        })?
+        .trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let ov: DdFindingPayloadOverride = serde_json::from_str(trimmed).map_err(|e| {
+        AppError::new(
+            DomainError::BadRequest(format!("invalid override JSON: {e}")),
+            request_id,
+            Some(instance.to_string()),
+        )
+    })?;
+    Ok(Some(ov))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/integrations/defectdojo/preview/diff/{diff_event_id}",
+    tag = "Integrations",
+    security(("bearer_auth" = [])),
+    params(("diff_event_id" = Uuid, Path, description = "ASI diff event UUID")),
+    responses(
+        (status = 200, description = "Preview of DefectDojo finding payload + saved override for diff event", body = DdFindingPreviewDto),
+        (status = 404, description = "Diff not found", body = ProblemDetails)
+    )
+)]
+pub async fn preview_diff_defectdojo(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path(diff_event_id): Path<Uuid>,
+) -> Result<Json<DdFindingPreviewDto>, AppError> {
+    let instance = format!("/api/v1/integrations/defectdojo/preview/diff/{diff_event_id}");
+    auth.require(Permission::ViewInventoryAndDiffs, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+    let asi_public_url = read_asi_public_url(pool).await;
+
+    match build_diff_dd_preview(pool, &asi_public_url, diff_event_id).await {
+        Ok(dto) => Ok(Json(dto)),
+        Err(e) if e.contains("not found") => Err(AppError::new(
+            DomainError::NotFound(e),
+            auth.request_id,
+            Some(instance),
+        )),
+        Err(e) => Err(AppError::new(
+            DomainError::BadRequest(e),
+            auth.request_id,
+            Some(instance),
+        )),
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/integrations/defectdojo/override/diff/{diff_event_id}",
+    tag = "Integrations",
+    security(("bearer_auth" = [])),
+    params(("diff_event_id" = Uuid, Path, description = "ASI diff event UUID")),
+    request_body = DdFindingPayloadOverride,
+    responses(
+        (status = 200, description = "Saved DefectDojo payload override for diff event", body = DdFindingPreviewDto),
+        (status = 404, description = "Diff not found", body = ProblemDetails)
+    )
+)]
+pub async fn save_diff_defectdojo_override(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path(diff_event_id): Path<Uuid>,
+    Json(payload): Json<DdFindingPayloadOverride>,
+) -> Result<Json<DdFindingPreviewDto>, AppError> {
+    let instance = format!("/api/v1/integrations/defectdojo/override/diff/{diff_event_id}");
+    auth.require(Permission::ManageExternalIntegrations, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+
+    if let Err(e) = save_diff_dd_override(pool, diff_event_id, &payload).await {
+        if e.contains("not found") {
+            return Err(AppError::new(
+                DomainError::NotFound(e),
+                auth.request_id,
+                Some(instance),
+            ));
+        }
+        return Err(AppError::new(
+            DomainError::BadRequest(e),
+            auth.request_id,
+            Some(instance),
+        ));
+    }
+
+    let asi_public_url = read_asi_public_url(pool).await;
+    let preview = build_diff_dd_preview(pool, &asi_public_url, diff_event_id)
+        .await
+        .map_err(|e| AppError::new(DomainError::BadRequest(e), auth.request_id, Some(instance)))?;
+    Ok(Json(preview))
+}
+
 #[utoipa::path(
     post,
     path = "/api/v1/integrations/defectdojo/push/{diff_event_id}",
     tag = "Integrations",
     security(("bearer_auth" = [])),
     params(("diff_event_id" = Uuid, Path, description = "ASI diff event UUID")),
+    request_body(content = Option<DdFindingPayloadOverride>, description = "Optional DefectDojo finding payload override applied before pushing"),
     responses(
         (status = 200, description = "Diff pushed (or updated) to DefectDojo", body = DdPushDiffResponse),
         (status = 404, description = "Diff not found", body = ProblemDetails)
@@ -360,10 +561,12 @@ pub async fn push_diff_to_defectdojo(
     auth: AuthenticatedUser,
     State(state): State<AppState>,
     Path(diff_event_id): Path<Uuid>,
+    body: Bytes,
 ) -> Result<Json<DdPushDiffResponse>, AppError> {
     let instance = format!("/api/v1/integrations/defectdojo/push/{diff_event_id}");
     auth.require(Permission::ManageExternalIntegrations, &instance)?;
     let pool = require_db(&state, auth.request_id, &instance)?;
+    let override_opt = parse_optional_override(&body, auth.request_id, &instance)?;
 
     let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM diff_events WHERE id = $1")
         .bind(diff_event_id)
@@ -378,7 +581,7 @@ pub async fn push_diff_to_defectdojo(
         ));
     }
 
-    match push_single_diff(pool, &state.secret_box, diff_event_id).await {
+    match push_single_diff(pool, &state.secret_box, diff_event_id, override_opt).await {
         Ok(finding_id) => Ok(Json(DdPushDiffResponse {
             diff_event_id,
             enqueued: true,
@@ -390,6 +593,188 @@ pub async fn push_diff_to_defectdojo(
             Some(instance),
         )),
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/integrations/defectdojo/preview/host/{host_id}",
+    tag = "Integrations",
+    security(("bearer_auth" = [])),
+    params(("host_id" = Uuid, Path, description = "ASI host UUID")),
+    responses(
+        (status = 200, description = "Preview of DefectDojo finding payload + saved override for host", body = DdFindingPreviewDto),
+        (status = 404, description = "Host not found", body = ProblemDetails)
+    )
+)]
+pub async fn preview_host_defectdojo(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path(host_id): Path<Uuid>,
+) -> Result<Json<DdFindingPreviewDto>, AppError> {
+    let instance = format!("/api/v1/integrations/defectdojo/preview/host/{host_id}");
+    auth.require(Permission::ViewInventoryAndDiffs, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+    let asi_public_url = read_asi_public_url(pool).await;
+
+    match build_host_dd_preview(pool, &asi_public_url, host_id).await {
+        Ok(dto) => Ok(Json(dto)),
+        Err(e) if e.contains("not found") => Err(AppError::new(
+            DomainError::NotFound(e),
+            auth.request_id,
+            Some(instance),
+        )),
+        Err(e) => Err(AppError::new(
+            DomainError::BadRequest(e),
+            auth.request_id,
+            Some(instance),
+        )),
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/integrations/defectdojo/override/host/{host_id}",
+    tag = "Integrations",
+    security(("bearer_auth" = [])),
+    params(("host_id" = Uuid, Path, description = "ASI host UUID")),
+    request_body = DdFindingPayloadOverride,
+    responses(
+        (status = 200, description = "Saved DefectDojo payload override for host", body = DdFindingPreviewDto),
+        (status = 404, description = "Host not found", body = ProblemDetails)
+    )
+)]
+pub async fn save_host_defectdojo_override(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path(host_id): Path<Uuid>,
+    Json(payload): Json<DdFindingPayloadOverride>,
+) -> Result<Json<DdFindingPreviewDto>, AppError> {
+    let instance = format!("/api/v1/integrations/defectdojo/override/host/{host_id}");
+    auth.require(Permission::ManageExternalIntegrations, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+
+    if let Err(e) = save_host_dd_override(pool, host_id, &payload).await {
+        if e.contains("not found") {
+            return Err(AppError::new(
+                DomainError::NotFound(e),
+                auth.request_id,
+                Some(instance),
+            ));
+        }
+        return Err(AppError::new(
+            DomainError::BadRequest(e),
+            auth.request_id,
+            Some(instance),
+        ));
+    }
+
+    let asi_public_url = read_asi_public_url(pool).await;
+    let preview = build_host_dd_preview(pool, &asi_public_url, host_id)
+        .await
+        .map_err(|e| AppError::new(DomainError::BadRequest(e), auth.request_id, Some(instance)))?;
+    Ok(Json(preview))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/integrations/defectdojo/push-host/{host_id}",
+    tag = "Integrations",
+    security(("bearer_auth" = [])),
+    params(("host_id" = Uuid, Path, description = "ASI host UUID")),
+    request_body(content = Option<DdFindingPayloadOverride>, description = "Optional DefectDojo finding payload override applied before pushing host"),
+    responses(
+        (status = 200, description = "Host pushed (or updated) to DefectDojo", body = DdPushHostResponse),
+        (status = 404, description = "Host not found", body = ProblemDetails)
+    )
+)]
+pub async fn push_host_to_defectdojo(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path(host_id): Path<Uuid>,
+    body: Bytes,
+) -> Result<Json<DdPushHostResponse>, AppError> {
+    let instance = format!("/api/v1/integrations/defectdojo/push-host/{host_id}");
+    auth.require(Permission::ManageExternalIntegrations, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+    let override_opt = parse_optional_override(&body, auth.request_id, &instance)?;
+
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM hosts WHERE id = $1")
+        .bind(host_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| map_db_err(err, "host lookup failed", auth.request_id, &instance))?;
+    if exists.is_none() {
+        return Err(AppError::new(
+            DomainError::NotFound(format!("host {host_id} not found")),
+            auth.request_id,
+            Some(instance),
+        ));
+    }
+
+    match push_single_host(pool, &state.secret_box, host_id, override_opt).await {
+        Ok(dd_finding_id) => Ok(Json(DdPushHostResponse {
+            host_id,
+            dd_finding_id,
+            note: format!("pushed host to DefectDojo as finding #{dd_finding_id}"),
+        })),
+        Err(e) => Err(AppError::new(
+            DomainError::BadRequest(format!("host push failed: {e}")),
+            auth.request_id,
+            Some(instance),
+        )),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/integrations/defectdojo/host-link/{host_id}",
+    tag = "Integrations",
+    security(("bearer_auth" = [])),
+    params(("host_id" = Uuid, Path, description = "ASI host UUID")),
+    responses(
+        (status = 200, description = "DefectDojo link for host", body = DdLinkDto),
+        (status = 404, description = "No host link yet", body = ProblemDetails)
+    )
+)]
+pub async fn get_dd_host_link(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path(host_id): Path<Uuid>,
+) -> Result<Json<DdLinkDto>, AppError> {
+    let instance = format!("/api/v1/integrations/defectdojo/host-link/{host_id}");
+    auth.require(Permission::ViewInventoryAndDiffs, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+
+    let row = sqlx::query(
+        r#"SELECT dd_product_id, dd_engagement_id, dd_test_id, dd_finding_id,
+                  dd_finding_status, dd_tags, last_pushed_at, last_pulled_at
+           FROM dd_links
+           WHERE host_id = $1 AND diff_event_id IS NULL"#,
+    )
+    .bind(host_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| map_db_err(err, "dd host link read failed", auth.request_id, &instance))?
+    .ok_or_else(|| {
+        AppError::new(
+            DomainError::NotFound(format!("no DefectDojo link for host {host_id}")),
+            auth.request_id,
+            Some(instance.clone()),
+        )
+    })?;
+
+    let tags: Vec<String> = serde_json::from_value(row.get("dd_tags")).unwrap_or_default();
+    Ok(Json(DdLinkDto {
+        diff_event_id: host_id,
+        dd_product_id: row.get("dd_product_id"),
+        dd_engagement_id: row.get("dd_engagement_id"),
+        dd_test_id: row.get("dd_test_id"),
+        dd_finding_id: row.get("dd_finding_id"),
+        dd_finding_status: row.get("dd_finding_status"),
+        dd_tags: tags,
+        last_pushed_at: row.get("last_pushed_at"),
+        last_pulled_at: row.get("last_pulled_at"),
+    }))
 }
 
 #[utoipa::path(
@@ -501,5 +886,47 @@ pub async fn list_dd_outbox(
     Ok(Json(PaginatedResponse {
         items,
         pagination: PaginationMeta::new(page, per_page, u64::try_from(total).unwrap_or(0)),
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/integrations/defectdojo/outbox/retry",
+    tag = "Integrations",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Reset failed outbox entries to pending and clear last_error", body = DdRetryOutboxResponse)
+    )
+)]
+pub async fn retry_failed_dd_outbox(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+) -> Result<Json<DdRetryOutboxResponse>, AppError> {
+    let instance = "/api/v1/integrations/defectdojo/outbox/retry";
+    auth.require(Permission::ManageExternalIntegrations, instance)?;
+    let pool = require_db(&state, auth.request_id, instance)?;
+
+    let res = sqlx::query(
+        r#"
+        UPDATE dd_outbox
+        SET status = 'pending',
+            next_retry_at = NOW(),
+            last_error = NULL,
+            updated_at = NOW()
+        WHERE status IN ('failed', 'pending')
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|err| map_db_err(err, "outbox retry failed", auth.request_id, instance))?;
+
+    let _ = sqlx::query(
+        "UPDATE defectdojo_config SET last_error = NULL, updated_at = NOW() WHERE id = TRUE",
+    )
+    .execute(pool)
+    .await;
+
+    Ok(Json(DdRetryOutboxResponse {
+        retried_count: i64::try_from(res.rows_affected()).unwrap_or(0),
     }))
 }

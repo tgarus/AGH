@@ -54,6 +54,8 @@ struct CandidateChunkRow {
     subnet_bucket: String,
     targets: serde_json::Value,
     policy_snapshot: serde_json::Value,
+    include_all_ignored: bool,
+    overridden_ignored_values: Vec<String>,
 }
 
 #[derive(FromRow)]
@@ -565,20 +567,31 @@ pub async fn lease_chunk(
     .await
     .map_err(|err| map_db_err(err, "lease reclaim failed", worker.request_id, instance))?;
 
-    // 2. Fetch candidate pending chunks using FOR UPDATE SKIP LOCKED
+    // 2. Fetch candidate pending chunks using FOR UPDATE SKIP LOCKED (enforcing worker visibility scope)
     let candidates: Vec<CandidateChunkRow> = sqlx::query_as(
         r#"
         SELECT sc.id, sc.scan_run_id, sr.asset_group_id, sc.subnet_bucket, sc.targets,
-               sr.policy_snapshot
+               sr.policy_snapshot, sr.include_all_ignored, sr.overridden_ignored_values
         FROM scan_chunks sc
         INNER JOIN scan_runs sr ON sr.id = sc.scan_run_id
+        INNER JOIN worker_nodes wn ON wn.id = $1
         WHERE sc.status = 'pending'
           AND sr.status IN ('queued', 'running')
+          AND (
+              wn.visibility_scope = 'all'
+              OR sr.asset_group_id = ANY(wn.allowed_asset_group_ids)
+              OR EXISTS (
+                  SELECT 1 FROM asset_group_members agm
+                  WHERE agm.asset_group_id = sr.asset_group_id
+                    AND agm.user_id = ANY(wn.allowed_user_ids)
+              )
+          )
         ORDER BY sr.started_at ASC, sc.sequence_no ASC
         FOR UPDATE OF sc SKIP LOCKED
         LIMIT 20
         "#,
     )
+    .bind(worker.worker_id)
     .fetch_all(&mut *tx)
     .await
     .map_err(|err| map_db_err(err, "chunk lease query failed", worker.request_id, instance))?;
@@ -619,14 +632,19 @@ pub async fn lease_chunk(
         .map_err(|err| map_db_err(err, "ignored query failed", worker.request_id, instance))?;
 
         let mut ignored_domains = BTreeSet::new();
-        for row in ignored_rows {
-            if row.target_type == "domain" {
-                let norm = normalize_domain(&row.value);
-                if !norm.is_empty() {
-                    ignored_domains.insert(norm);
+        if !candidate.include_all_ignored {
+            for row in ignored_rows {
+                if candidate.overridden_ignored_values.contains(&row.value) {
+                    continue;
                 }
-            } else {
-                excluded_cidrs.push(row.value);
+                if row.target_type == "domain" {
+                    let norm = normalize_domain(&row.value);
+                    if !norm.is_empty() {
+                        ignored_domains.insert(norm);
+                    }
+                } else {
+                    excluded_cidrs.push(row.value);
+                }
             }
         }
 
@@ -1747,18 +1765,29 @@ pub async fn submit_chunk_results(
 
     for (host_id, ip_addr, anomaly_type, open_port_count) in anomaly_events {
         let ev_id = Uuid::new_v4();
-        state.events.emit_ui(
-            "host.anomaly",
-            ev_id,
-            serde_json::json!({
-                "event_id": ev_id,
-                "occurred_at": now,
-                "host_id": host_id,
-                "ip_addr": ip_addr,
-                "anomaly_type": anomaly_type,
-                "open_port_count": open_port_count,
-            }),
-        );
+        let payload = serde_json::json!({
+            "event_id": ev_id,
+            "occurred_at": now,
+            "host_id": host_id,
+            "ip_addr": ip_addr,
+            "anomaly_type": anomaly_type,
+            "open_port_count": open_port_count,
+        });
+        state.events.emit_ui("host.anomaly", ev_id, payload.clone());
+        if let Err(err) = crate::notifications::worker::enqueue_webhook_event(
+            pool,
+            Some(run_meta.asset_group_id),
+            "host.anomaly_detected",
+            payload,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %err,
+                host_id = %host_id,
+                "failed to enqueue host.anomaly_detected webhook"
+            );
+        }
     }
 
     for (diff_event_id, host_id, ip_addr, draft) in emitted_diffs {
@@ -1793,6 +1822,29 @@ pub async fn submit_chunk_results(
                 "reason": null,
             }),
         );
+        if next_run_status == "completed" {
+            if let Err(err) = crate::notifications::worker::enqueue_webhook_event(
+                pool,
+                Some(run_meta.asset_group_id),
+                "scan.completed",
+                serde_json::json!({
+                    "event": "scan.completed",
+                    "scan_run_id": chunk.scan_run_id,
+                    "asset_group_id": run_meta.asset_group_id,
+                    "previous_status": run_meta.status,
+                    "current_status": next_run_status,
+                    "completed_at": now,
+                }),
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    scan_run_id = %chunk.scan_run_id,
+                    "failed to enqueue scan.completed webhook"
+                );
+            }
+        }
     }
 
     Ok(Json(ChunkResultsResponse {

@@ -60,17 +60,14 @@ impl DdClient {
             .req(reqwest::Method::GET, path)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format_dd_transport_error("GET", path, &e))?;
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(format!(
-                "DefectDojo GET {path} -> {status}: {}",
-                truncate(&body, 300)
-            ));
+            return Err(format_dd_http_error("GET", path, status, &body));
         }
         serde_json::from_str(&body)
-            .map_err(|e| format!("invalid JSON from DefectDojo GET {path}: {e}"))
+            .map_err(|e| format!("Invalid JSON from DefectDojo GET {path}: {e}"))
     }
 
     async fn post_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
@@ -83,17 +80,14 @@ impl DdClient {
             .json(payload)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format_dd_transport_error("POST", path, &e))?;
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(format!(
-                "DefectDojo POST {path} -> {status}: {}",
-                truncate(&body, 300)
-            ));
+            return Err(format_dd_http_error("POST", path, status, &body));
         }
         serde_json::from_str(&body)
-            .map_err(|e| format!("invalid JSON from DefectDojo POST {path}: {e}"))
+            .map_err(|e| format!("Invalid JSON from DefectDojo POST {path}: {e}"))
     }
 
     async fn patch_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
@@ -106,17 +100,14 @@ impl DdClient {
             .json(payload)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format_dd_transport_error("PATCH", path, &e))?;
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(format!(
-                "DefectDojo PATCH {path} -> {status}: {}",
-                truncate(&body, 300)
-            ));
+            return Err(format_dd_http_error("PATCH", path, status, &body));
         }
         serde_json::from_str(&body)
-            .map_err(|e| format!("invalid JSON from DefectDojo PATCH {path}: {e}"))
+            .map_err(|e| format!("Invalid JSON from DefectDojo PATCH {path}: {e}"))
     }
 
     /// Liczba produktow w DD — prosty test polaczenia i autoryzacji.
@@ -125,7 +116,6 @@ impl DdClient {
         Ok(page.count)
     }
 
-    /// Product per asset_group (nazwa "ASI: <nazwa grupy>"), idempotentnie.
     pub async fn ensure_product(
         &self,
         group_name: &str,
@@ -272,12 +262,13 @@ impl DdClient {
             urlencode(&payload.unique_id_from_tool)
         );
         let page: DdPaginated<DdFinding> = self.get_paginated(&path).await?;
+        let wire_body = payload.to_wire_json();
         if let Some(existing) = page.results.into_iter().find(|f| {
             f.unique_id_from_tool.as_deref() == Some(payload.unique_id_from_tool.as_str())
         }) {
             let id = existing.id;
             let _: DdFinding = self
-                .patch_json(&format!("/findings/{id}/"), payload)
+                .patch_json(&format!("/findings/{id}/"), &wire_body)
                 .await?;
             return Ok(id);
         }
@@ -285,7 +276,7 @@ impl DdClient {
         struct Created {
             id: i32,
         }
-        let created: Created = self.post_json("/findings/", payload).await?;
+        let created: Created = self.post_json("/findings/", &wire_body).await?;
         Ok(created.id)
     }
 
@@ -331,6 +322,37 @@ fn urlencode(s: &str) -> String {
 
 fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
+}
+
+fn format_dd_transport_error(method: &str, path: &str, err: &reqwest::Error) -> String {
+    if err.is_timeout() {
+        format!("DefectDojo {method} {path}: przekroczono limit czasu połączenia (timeout): {err}")
+    } else if err.is_connect() {
+        format!("DefectDojo {method} {path}: nie można nawiązać połączenia z serwerem (sprawdź Base URL i sieć): {err}")
+    } else {
+        format!("DefectDojo {method} {path}: błąd HTTP: {err}")
+    }
+}
+
+fn format_dd_http_error(
+    method: &str,
+    path: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> String {
+    let snippet = truncate(body.trim(), 300);
+    match status.as_u16() {
+        401 | 403 => format!(
+            "DefectDojo {method} {path} -> {status} (błąd autoryzacji: sprawdź API Token i uprawnienia konta): {snippet}"
+        ),
+        400 => format!(
+            "DefectDojo {method} {path} -> 400 Bad Request (niepoprawne pola findinga/konfiguracji): {snippet}"
+        ),
+        404 => format!(
+            "DefectDojo {method} {path} -> 404 Not Found (sprawdź czy Base URL nie zawiera /api/v2 ani zbędnego prefiksu): {snippet}"
+        ),
+        _ => format!("DefectDojo {method} {path} -> {status}: {snippet}"),
+    }
 }
 
 #[cfg(test)]

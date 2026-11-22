@@ -8,6 +8,8 @@ export type Role = components['schemas']['Role'];
 export type Permission = components['schemas']['Permission'];
 export type AssetGroupDto = components['schemas']['AssetGroupDto'];
 export type AssetGroupDetailDto = components['schemas']['AssetGroupDetailDto'];
+export type AssetGroupMemberDto = components['schemas']['AssetGroupMemberDto'];
+export type SetAssetGroupMembersRequest = components['schemas']['SetAssetGroupMembersRequest'];
 export type ScanPolicyDto = components['schemas']['ScanPolicyDto'];
 export type TargetType = components['schemas']['TargetType'];
 export type IgnoredTargetDto = components['schemas']['IgnoredTargetDto'];
@@ -20,15 +22,26 @@ export type ImportTargetsJsonResponse = components['schemas']['ImportTargetsJson
 export type PreflightResponse = components['schemas']['PreflightResponse'];
 export type ScanRunDto = components['schemas']['ScanRunDto'];
 export type ScanChunkDto = components['schemas']['ScanChunkDto'];
+export type ScanChunkDetailDto = components['schemas']['ScanChunkDetailDto'];
+export type ScanHostSampleDto = components['schemas']['ScanHostSampleDto'];
+export type ScanExplorationDto = components['schemas']['ScanExplorationDto'];
+export type RecurringScanScheduleDto = components['schemas']['RecurringScanScheduleDto'];
+export type UpdateRecurringScanRequest = components['schemas']['UpdateRecurringScanRequest'];
 export type HostSummaryDto = components['schemas']['HostSummaryDto'];
 export type HostDetailDto = components['schemas']['HostDetailDto'];
 export type HostPortDto = components['schemas']['HostPortDto'];
+export type HostCommentDto = components['schemas']['HostCommentDto'];
+export type CreateHostCommentRequest = components['schemas']['CreateHostCommentRequest'];
 export type DiffEventDto = components['schemas']['DiffEventDto'];
 export type BulletItem = components['schemas']['BulletItem'];
 export type DiffEventKind = components['schemas']['DiffEventKind'];
 export type DiffSeverity = components['schemas']['DiffSeverity'];
 export type HostStatus = components['schemas']['HostStatus'];
 export type DashboardStatsDto = components['schemas']['DashboardStatsDto'];
+export type DashboardAnalyticsDto = components['schemas']['DashboardAnalyticsDto'];
+export type ScanAnalyticsPointDto = components['schemas']['ScanAnalyticsPointDto'];
+export type PortCountDto = components['schemas']['PortCountDto'];
+export type GroupInventoryStatDto = components['schemas']['GroupInventoryStatDto'];
 export type ServiceRowDto = components['schemas']['ServiceRowDto'];
 export type ServiceClusterDto = components['schemas']['ServiceClusterDto'];
 export type ClusterKind = components['schemas']['ClusterKind'];
@@ -37,6 +50,19 @@ export type ValidateSignatureResponse = components['schemas']['ValidateSignature
 export type NotificationChannelDto = components['schemas']['NotificationChannelDto'];
 export type NotificationChannelType = components['schemas']['NotificationChannelType'];
 export type NotificationDeliveryDto = components['schemas']['NotificationDeliveryDto'];
+export type DdFindingPayloadOverride = components['schemas']['DdFindingPayloadOverride'];
+export type DdFindingPreviewDto = components['schemas']['DdFindingPreviewDto'];
+export type DdFindingUpsert = components['schemas']['DdFindingUpsert'];
+export type DdPushHostResponse = components['schemas']['DdPushHostResponse'];
+export type DdRetryOutboxResponse = components['schemas']['DdRetryOutboxResponse'];
+export type TriggerCustomWebhookRequest = components['schemas']['TriggerCustomWebhookRequest'];
+export type QuickScanRequest = components['schemas']['QuickScanRequest'];
+export type QuickScanResponse = components['schemas']['QuickScanResponse'];
+export type ImportTargetsFlexibleRequest = components['schemas']['ImportTargetsFlexibleRequest'];
+export type ImportTargetsFlexibleResponse = components['schemas']['ImportTargetsFlexibleResponse'];
+export type ImportScanResultsRequest = components['schemas']['ImportScanResultsRequest'];
+export type ImportScanResultsResponse = components['schemas']['ImportScanResultsResponse'];
+export type ScanResultImportItem = components['schemas']['ScanResultImportItem'];
 
 let accessToken: string | null = null;
 let refreshInFlight: Promise<AuthUser | null> | null = null;
@@ -117,4 +143,44 @@ export function formatApiError(err: unknown, fallback: string): string {
     return base;
   }
   return fallback;
+}
+
+export async function downloadAuthorizedFile(url: string, filename: string): Promise<void> {
+  const makeHeaders = () => {
+    const headers: Record<string, string> = {};
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
+    return headers;
+  };
+
+  let response = await fetch(url, {
+    method: 'GET',
+    headers: makeHeaders(),
+    credentials: 'include',
+  });
+
+  if (response.status === 401 && accessToken) {
+    const user = await refreshSessionOnce();
+    if (user) {
+      response = await fetch(url, {
+        method: 'GET',
+        headers: makeHeaders(),
+        credentials: 'include',
+      });
+    }
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(text || `Download failed with HTTP ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(blobUrl);
 }

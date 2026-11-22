@@ -62,6 +62,7 @@ export function IntegrationsView() {
     const cfg = configQuery.data;
     if (cfg) {
       setBaseUrl(cfg.base_url);
+      setAsiPublicUrl(cfg.asi_public_url ?? '');
       setScope(cfg.finding_scope as FindingScope);
       setAutoPush(cfg.auto_push);
       setPullInterval(cfg.pull_interval_minutes);
@@ -70,14 +71,18 @@ export function IntegrationsView() {
   }, [configQuery.data]);
 
   const saveMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (overrides?: {
+      scope?: FindingScope;
+      autoPush?: boolean;
+      enabled?: boolean;
+    }) => {
       const body: Record<string, unknown> = {
         base_url: baseUrl.trim(),
         asi_public_url: asiPublicUrl.trim(),
-        finding_scope: scope,
-        auto_push: autoPush,
+        finding_scope: overrides?.scope ?? scope,
+        auto_push: overrides?.autoPush ?? autoPush,
         pull_interval_minutes: pullInterval,
-        enabled,
+        enabled: overrides?.enabled ?? enabled,
       };
       if (apiKey.trim()) {
         body.api_key = apiKey.trim();
@@ -100,6 +105,12 @@ export function IntegrationsView() {
     mutationFn: async () => {
       const { data, error } = await apiClient.POST(
         '/api/v1/integrations/defectdojo/test-connection',
+        {
+          body: {
+            base_url: baseUrl.trim() || null,
+            api_key: apiKey.trim() || null,
+          },
+        },
       );
       if (error) {
         throw new Error(formatApiError(error, 'Connection test failed.'));
@@ -113,8 +124,30 @@ export function IntegrationsView() {
           ? t('integrations.messages.testOk', { count: res.product_count ?? 0 })
           : t('integrations.messages.testFail', { error: res?.error ?? '' }),
       });
+      void queryClient.invalidateQueries({ queryKey: ['dd-config'] });
     },
     onError: (err) => setTestResult({ ok: false, text: err.message }),
+  });
+
+  const retryOutboxMutation = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await apiClient.POST(
+        '/api/v1/integrations/defectdojo/outbox/retry',
+      );
+      if (error || !data) {
+        throw new Error(formatApiError(error, 'Failed to retry failed outbox entries.'));
+      }
+      return data;
+    },
+    onSuccess: (res) => {
+      setFormMsg({
+        kind: 'ok',
+        text: t('integrations.messages.retriedOutbox', { count: res.retried_count }),
+      });
+      void queryClient.invalidateQueries({ queryKey: ['dd-config'] });
+      void queryClient.invalidateQueries({ queryKey: ['dd-outbox'] });
+    },
+    onError: (err) => setFormMsg({ kind: 'err', text: err.message }),
   });
 
   const syncMutation = useMutation({
@@ -208,8 +241,19 @@ export function IntegrationsView() {
           </div>
 
           {cfg?.last_error ? (
-            <div className="rounded-md border border-red-800 bg-red-950/40 px-4 py-3 text-sm text-red-300">
-              {cfg.last_error}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-800 bg-red-950/40 px-4 py-3 text-sm text-red-300">
+              <span>{cfg.last_error}</span>
+              {canManage ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => retryOutboxMutation.mutate()}
+                  disabled={retryOutboxMutation.isPending}
+                >
+                  {t('integrations.actions.retryFailed')}
+                </Button>
+              ) : null}
             </div>
           ) : null}
 
@@ -300,6 +344,20 @@ export function IntegrationsView() {
                 </Button>
                 <Button
                   type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setEnabled(true);
+                    setAutoPush(true);
+                    setScope('inventory');
+                    saveMutation.mutate({ enabled: true, autoPush: true, scope: 'inventory' });
+                  }}
+                  disabled={saveMutation.isPending}
+                >
+                  {t('integrations.actions.autoPushAll')}
+                </Button>
+                <Button
+                  type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => testMutation.mutate()}
@@ -343,14 +401,26 @@ export function IntegrationsView() {
               <CardTitle>{t('integrations.outbox.title')}</CardTitle>
               <CardDescription>{t('integrations.outbox.subtitle')}</CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void outboxQuery.refetch()}
-            >
-              <RefreshCw className="h-4 w-4" />
-              {t('health.refresh')}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              {canManage ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => retryOutboxMutation.mutate()}
+                  disabled={retryOutboxMutation.isPending}
+                >
+                  {t('integrations.actions.retryFailed')}
+                </Button>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void outboxQuery.refetch()}
+              >
+                <RefreshCw className="h-4 w-4" />
+                {t('health.refresh')}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>

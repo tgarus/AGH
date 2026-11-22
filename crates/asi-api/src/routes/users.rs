@@ -612,6 +612,43 @@ pub async fn delete_user(
 
 #[utoipa::path(
     get,
+    path = "/api/v1/users/directory",
+    tag = "Users",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Active users directory for asset group & worker scoping", body = Vec<UserSummary>),
+        (status = 403, description = "Forbidden", body = ProblemDetails)
+    )
+)]
+pub async fn list_users_directory(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<UserSummary>>, AppError> {
+    let instance = "/api/v1/users/directory";
+    auth.require(Permission::ViewInventoryAndDiffs, instance)?;
+    let pool = require_db(&state, auth.request_id, instance)?;
+
+    let rows: Vec<UserRow> = sqlx::query_as(
+        r#"
+        SELECT id, username, email, role, is_active, preferred_locale, created_at, updated_at, last_login_at
+        FROM users
+        WHERE is_active = TRUE
+        ORDER BY username ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| map_db_err(err, "user directory query failed", auth.request_id, instance))?;
+
+    let mut users = Vec::with_capacity(rows.len());
+    for row in rows {
+        users.push(row.into_summary(auth.request_id, instance)?);
+    }
+    Ok(Json(users))
+}
+
+#[utoipa::path(
+    get,
     path = "/api/v1/audit-logs",
     tag = "Users",
     security(("bearer_auth" = [])),

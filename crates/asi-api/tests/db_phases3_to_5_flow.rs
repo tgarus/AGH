@@ -677,7 +677,7 @@ async fn live_db_phases3_to_5_scan_diff_instability_clusters_audit_and_kill_swit
     assert!(deliveries_page
         .items
         .iter()
-        .any(|d| d.channel_id == channel.id && d.diff_event_id == admin_diff.id));
+        .any(|d| d.channel_id == channel.id && d.diff_event_id == Some(admin_diff.id)));
 
     let (st, bytes) = api_json_request(
         &app,

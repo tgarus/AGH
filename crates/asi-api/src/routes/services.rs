@@ -418,6 +418,219 @@ pub async fn dashboard_summary(
     }))
 }
 
+#[derive(FromRow)]
+struct ScanAnalyticsRow {
+    scan_run_id: Uuid,
+    asset_group_id: Uuid,
+    asset_group_name: String,
+    status: String,
+    trigger_type: String,
+    total_targets: i32,
+    completed_chunks: i32,
+    total_chunks: i32,
+    duration_seconds: Option<i64>,
+    ema_chunk_ms: Option<f64>,
+    confirmed_diffs: i64,
+    variance_diffs: i64,
+    started_at: chrono::DateTime<Utc>,
+}
+
+#[derive(FromRow)]
+struct TopPortRow {
+    port: i32,
+    protocol: String,
+    service_name: Option<String>,
+    host_count: i64,
+}
+
+#[derive(FromRow)]
+struct GroupStatRow {
+    asset_group_id: Uuid,
+    asset_group_name: String,
+    active_hosts: i64,
+    open_ports: i64,
+    confirmed_diffs: i64,
+    total_scans: i64,
+}
+
+#[derive(FromRow)]
+struct LabelCountRow {
+    label: String,
+    cnt: i64,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/dashboard/analytics",
+    tag = "Dashboard",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Platform analytics time series and distributions", body = asi_common::inventory::DashboardAnalyticsDto)
+    )
+)]
+pub async fn dashboard_analytics(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+) -> Result<Json<asi_common::inventory::DashboardAnalyticsDto>, AppError> {
+    use asi_common::inventory::{
+        DashboardAnalyticsDto, GroupInventoryStatDto, PortCountDto, ScanAnalyticsPointDto,
+    };
+    let instance = "/api/v1/dashboard/analytics";
+    auth.require(Permission::ViewInventoryAndDiffs, instance)?;
+    let pool = require_db(&state, auth.request_id, instance)?;
+
+    let scan_rows: Vec<ScanAnalyticsRow> = sqlx::query_as(
+        r#"
+        SELECT sr.id AS scan_run_id,
+               sr.asset_group_id,
+               ag.name AS asset_group_name,
+               sr.status,
+               sr.trigger_type,
+               sr.total_targets,
+               sr.completed_chunks,
+               sr.total_chunks,
+               CASE
+                   WHEN sr.finished_at IS NOT NULL THEN
+                       GREATEST(0, EXTRACT(EPOCH FROM (sr.finished_at - sr.started_at))::BIGINT)
+                   ELSE NULL
+               END AS duration_seconds,
+               sr.ema_chunk_ms,
+               COALESCE((SELECT COUNT(*) FROM diff_events de WHERE de.scan_run_id = sr.id AND de.event_kind = 'confirmed_change'), 0) AS confirmed_diffs,
+               COALESCE((SELECT COUNT(*) FROM diff_events de WHERE de.scan_run_id = sr.id AND de.event_kind = 'active_variance'), 0) AS variance_diffs,
+               sr.started_at
+        FROM scan_runs sr
+        INNER JOIN asset_groups ag ON ag.id = sr.asset_group_id
+        ORDER BY sr.started_at DESC
+        LIMIT 12
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| map_db_err(err, "recent scans analytics query failed", auth.request_id, instance))?;
+
+    let recent_scans = scan_rows
+        .into_iter()
+        .rev()
+        .map(|r| ScanAnalyticsPointDto {
+            scan_run_id: r.scan_run_id,
+            asset_group_id: r.asset_group_id,
+            asset_group_name: r.asset_group_name,
+            status: r.status,
+            trigger_type: r.trigger_type,
+            total_targets: r.total_targets,
+            completed_chunks: r.completed_chunks,
+            total_chunks: r.total_chunks,
+            duration_seconds: r.duration_seconds,
+            ema_chunk_ms: r.ema_chunk_ms,
+            confirmed_diffs: r.confirmed_diffs,
+            variance_diffs: r.variance_diffs,
+            started_at: r.started_at,
+        })
+        .collect();
+
+    let port_rows: Vec<TopPortRow> = sqlx::query_as(
+        r#"
+        SELECT hp.port,
+               hp.protocol,
+               MAX(hp.service_name) AS service_name,
+               COUNT(DISTINCT hp.host_id) AS host_count
+        FROM host_ports hp
+        WHERE hp.state = 'active'
+        GROUP BY hp.port, hp.protocol
+        ORDER BY host_count DESC, hp.port ASC
+        LIMIT 10
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| {
+        map_db_err(
+            err,
+            "top ports analytics query failed",
+            auth.request_id,
+            instance,
+        )
+    })?;
+
+    let top_open_ports = port_rows
+        .into_iter()
+        .map(|r| PortCountDto {
+            port: r.port,
+            protocol: r.protocol,
+            service_name: r.service_name,
+            host_count: r.host_count,
+        })
+        .collect();
+
+    let group_rows: Vec<GroupStatRow> = sqlx::query_as(
+        r#"
+        SELECT ag.id AS asset_group_id,
+               ag.name AS asset_group_name,
+               (SELECT COUNT(*) FROM hosts h WHERE h.asset_group_id = ag.id AND h.status = 'active') AS active_hosts,
+               (SELECT COUNT(*) FROM host_ports hp INNER JOIN hosts h ON h.id = hp.host_id WHERE h.asset_group_id = ag.id AND hp.state = 'active') AS open_ports,
+               (SELECT COUNT(*) FROM diff_events de WHERE de.asset_group_id = ag.id AND de.event_kind = 'confirmed_change') AS confirmed_diffs,
+               (SELECT COUNT(*) FROM scan_runs sr WHERE sr.asset_group_id = ag.id) AS total_scans
+        FROM asset_groups ag
+        ORDER BY active_hosts DESC, ag.name ASC
+        LIMIT 20
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| map_db_err(err, "group stats analytics query failed", auth.request_id, instance))?;
+
+    let group_stats = group_rows
+        .into_iter()
+        .map(|r| GroupInventoryStatDto {
+            asset_group_id: r.asset_group_id,
+            asset_group_name: r.asset_group_name,
+            active_hosts: r.active_hosts,
+            open_ports: r.open_ports,
+            confirmed_diffs: r.confirmed_diffs,
+            total_scans: r.total_scans,
+        })
+        .collect();
+
+    let sev_rows: Vec<LabelCountRow> = sqlx::query_as(
+        "SELECT severity AS label, COUNT(*) AS cnt FROM diff_events GROUP BY severity",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| {
+        map_db_err(
+            err,
+            "diffs severity query failed",
+            auth.request_id,
+            instance,
+        )
+    })?;
+
+    let mut diffs_by_severity = std::collections::BTreeMap::new();
+    for r in sev_rows {
+        diffs_by_severity.insert(r.label, r.cnt);
+    }
+
+    let kind_rows: Vec<LabelCountRow> = sqlx::query_as(
+        "SELECT event_kind AS label, COUNT(*) AS cnt FROM diff_events GROUP BY event_kind",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| map_db_err(err, "diffs kind query failed", auth.request_id, instance))?;
+
+    let mut diffs_by_kind = std::collections::BTreeMap::new();
+    for r in kind_rows {
+        diffs_by_kind.insert(r.label, r.cnt);
+    }
+
+    Ok(Json(DashboardAnalyticsDto {
+        recent_scans,
+        top_open_ports,
+        group_stats,
+        diffs_by_severity,
+        diffs_by_kind,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

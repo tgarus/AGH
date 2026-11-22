@@ -57,6 +57,8 @@ impl DdFindingScope {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DefectDojoConfigDto {
     pub base_url: String,
+    #[serde(default)]
+    pub asi_public_url: String,
     pub finding_scope: DdFindingScope,
     pub auto_push: bool,
     pub pull_interval_minutes: i32,
@@ -67,6 +69,11 @@ pub struct DefectDojoConfigDto {
     pub last_pull_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DdRetryOutboxResponse {
+    pub retried_count: i64,
 }
 
 /// Aktualizacja konfiguracji; `api_key = None` oznacza "zostaw stary klucz".
@@ -222,9 +229,83 @@ pub struct DdFinding {
     pub tags: Vec<serde_json::Value>,
     #[serde(default)]
     pub active: Option<bool>,
+    #[serde(default)]
+    pub verified: Option<bool>,
+    #[serde(default)]
+    pub is_mitigated: Option<bool>,
+    #[serde(default)]
+    pub false_p: Option<bool>,
+    #[serde(default)]
+    pub out_of_scope: Option<bool>,
+    #[serde(default)]
+    pub risk_accepted: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl DdFinding {
+    #[must_use]
+    pub fn effective_status(&self) -> String {
+        if let Some(s) = &self.status {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        let mut parts = Vec::new();
+        if self.is_mitigated == Some(true) {
+            parts.push("Mitigated");
+        } else if self.false_p == Some(true) {
+            parts.push("False Positive");
+        } else if self.risk_accepted == Some(true) {
+            parts.push("Risk Accepted");
+        } else if self.out_of_scope == Some(true) {
+            parts.push("Out of Scope");
+        } else if self.active == Some(true) {
+            parts.push("Active");
+        } else {
+            parts.push("Inactive");
+        }
+        if self.verified == Some(true) {
+            parts.push("Verified");
+        }
+        parts.join(", ")
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct DdFindingPayloadOverride {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub numerical_severity: Option<String>,
+    #[serde(default)]
+    pub mitigation: Option<String>,
+    #[serde(default)]
+    pub impact: Option<String>,
+    #[serde(default)]
+    pub component_name: Option<String>,
+    #[serde(default)]
+    pub references: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub verified: Option<bool>,
+    #[serde(default)]
+    pub false_p: Option<bool>,
+    #[serde(default)]
+    pub out_of_scope: Option<bool>,
+    #[serde(default)]
+    pub extra_notes: Option<String>,
+    #[serde(default)]
+    pub custom_fields: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct DdFindingUpsert {
     pub title: String,
     pub description: String,
@@ -244,6 +325,189 @@ pub struct DdFindingUpsert {
     pub tags: Vec<String>,
     pub active: bool,
     pub verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mitigation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub false_p: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_of_scope: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_fields: Option<serde_json::Value>,
+}
+
+#[must_use]
+pub fn normalize_dd_severity(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "critical" => "Critical".to_string(),
+        "high" => "High".to_string(),
+        "medium" => "Medium".to_string(),
+        "low" => "Low".to_string(),
+        "info" | "informational" => "Info".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => "Info".to_string(),
+            }
+        }
+    }
+}
+
+#[must_use]
+pub fn dd_numerical_from_severity_str(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "critical" => "S4",
+        "high" => "S3",
+        "medium" => "S2",
+        "low" => "S1",
+        _ => "S0",
+    }
+}
+
+impl DdFindingUpsert {
+    pub fn apply_override(&mut self, ov: &DdFindingPayloadOverride) {
+        if let Some(title) = ov.title.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            self.title = title.chars().take(250).collect();
+        }
+        if let Some(description) = ov.description.as_deref() {
+            if !description.trim().is_empty() {
+                self.description = description.to_string();
+            }
+        }
+        if let Some(extra) = ov
+            .extra_notes
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if !self.description.ends_with('\n') {
+                self.description.push('\n');
+            }
+            self.description
+                .push_str(&format!("\nNotatka analityka:\n{extra}\n"));
+        }
+        if let Some(sev) = ov
+            .severity
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let norm = normalize_dd_severity(sev);
+            self.severity = norm.clone();
+            if ov
+                .numerical_severity
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+            {
+                self.numerical_severity = dd_numerical_from_severity_str(&norm).to_string();
+            }
+        }
+        if let Some(num) = ov
+            .numerical_severity
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            self.numerical_severity = num.to_string();
+        }
+        if let Some(mitigation) = &ov.mitigation {
+            let trimmed = mitigation.trim();
+            self.mitigation = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+        if let Some(impact) = &ov.impact {
+            let trimmed = impact.trim();
+            self.impact = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+        if let Some(component) = &ov.component_name {
+            let trimmed = component.trim();
+            self.component_name = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+        if let Some(references) = &ov.references {
+            let trimmed = references.trim();
+            self.references = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+        if let Some(tags) = &ov.tags {
+            self.tags = tags
+                .iter()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+        }
+        if let Some(active) = ov.active {
+            self.active = active;
+        }
+        if let Some(verified) = ov.verified {
+            self.verified = verified;
+        }
+        if let Some(false_p) = ov.false_p {
+            self.false_p = Some(false_p);
+        }
+        if let Some(out_of_scope) = ov.out_of_scope {
+            self.out_of_scope = Some(out_of_scope);
+        }
+        if let Some(cf) = &ov.custom_fields {
+            if cf.is_object() {
+                self.custom_fields = Some(cf.clone());
+            } else if cf.is_null() {
+                self.custom_fields = None;
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn to_wire_json(&self) -> serde_json::Value {
+        let mut val = serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({}));
+        if let Some(obj) = val.as_object_mut() {
+            obj.remove("custom_fields");
+            if let Some(serde_json::Value::Object(extra)) = &self.custom_fields {
+                for (k, v) in extra {
+                    let key = k.trim();
+                    if !key.is_empty() {
+                        obj.insert(key.to_string(), v.clone());
+                    }
+                }
+            }
+        }
+        val
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DdFindingPreviewDto {
+    pub target_kind: String,
+    pub target_id: Uuid,
+    pub ip_addr: String,
+    pub asset_group_name: String,
+    pub default_payload: DdFindingUpsert,
+    pub saved_override: Option<DdFindingPayloadOverride>,
+    pub effective_payload: DdFindingUpsert,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DdPushHostResponse {
+    pub host_id: Uuid,
+    pub dd_finding_id: i32,
+    pub note: String,
 }
 
 /// Mapowanie severity ASI -> DefectDojo (API v2 przyjmuje slugi pisane malymi literami).
@@ -352,5 +616,91 @@ mod tests {
         assert!(title.contains("10.0.0.5"));
         assert!(title.contains("+ service 8443/tcp"));
         assert!(title.len() <= 250);
+    }
+
+    #[test]
+    fn override_and_wire_json_apply_all_fields_and_custom_fields() {
+        let mut payload = DdFindingUpsert {
+            title: "Original title".to_string(),
+            description: "Original description".to_string(),
+            severity: "Low".to_string(),
+            date: "2026-11-22".to_string(),
+            test: 10,
+            found_by: vec![10],
+            numerical_severity: "S1".to_string(),
+            unique_id_from_tool: "diff-123".to_string(),
+            component_name: Some("http".to_string()),
+            references: None,
+            tags: vec!["asi".to_string()],
+            active: true,
+            verified: false,
+            ..Default::default()
+        };
+
+        let ov = DdFindingPayloadOverride {
+            title: Some("Custom title".to_string()),
+            severity: Some("critical".to_string()),
+            extra_notes: Some("Potwierdzono przez SOC".to_string()),
+            mitigation: Some("Ogranicz dostep przez VPN".to_string()),
+            impact: Some("Wystawiony panel admin".to_string()),
+            tags: Some(vec!["asi".to_string(), "urgent".to_string()]),
+            verified: Some(true),
+            custom_fields: Some(serde_json::json!({
+                "endpoints": ["https://10.0.0.5/admin"],
+                "cwe": 284
+            })),
+            ..Default::default()
+        };
+
+        payload.apply_override(&ov);
+        assert_eq!(payload.title, "Custom title");
+        assert_eq!(payload.severity, "Critical");
+        assert_eq!(payload.numerical_severity, "S4");
+        assert!(payload.description.contains("Original description"));
+        assert!(payload.description.contains("Potwierdzono przez SOC"));
+        assert_eq!(
+            payload.mitigation.as_deref(),
+            Some("Ogranicz dostep przez VPN")
+        );
+        assert_eq!(payload.impact.as_deref(), Some("Wystawiony panel admin"));
+        assert!(payload.verified);
+        assert_eq!(payload.tags, vec!["asi", "urgent"]);
+
+        let wire = payload.to_wire_json();
+        assert!(wire.get("custom_fields").is_none());
+        assert_eq!(wire["cwe"], 284);
+        assert_eq!(wire["endpoints"][0], "https://10.0.0.5/admin");
+    }
+
+    #[test]
+    fn effective_status_derives_from_booleans_when_status_missing() {
+        let f_active = DdFinding {
+            id: 1,
+            title: "Open port".to_string(),
+            severity: Some("High".to_string()),
+            status: None,
+            unique_id_from_tool: None,
+            tags: vec![],
+            active: Some(true),
+            verified: Some(true),
+            is_mitigated: None,
+            false_p: None,
+            out_of_scope: None,
+            risk_accepted: None,
+        };
+        assert_eq!(f_active.effective_status(), "Active, Verified");
+
+        let f_mitigated = DdFinding {
+            is_mitigated: Some(true),
+            verified: Some(false),
+            ..f_active.clone()
+        };
+        assert_eq!(f_mitigated.effective_status(), "Mitigated");
+
+        let f_explicit = DdFinding {
+            status: Some("Fixed".to_string()),
+            ..f_active
+        };
+        assert_eq!(f_explicit.effective_status(), "Fixed");
     }
 }

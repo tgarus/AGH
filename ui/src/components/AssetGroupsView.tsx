@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, Plus, Trash2, Upload } from 'lucide-react';
-import { useState, type FormEvent } from 'react';
+import { Download, Plus, Trash2, Upload, Users } from 'lucide-react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
   apiClient,
+  downloadAuthorizedFile,
   formatApiError,
-  type ImportTargetsJsonResponse,
+  type ImportScanResultsResponse,
+  type ImportTargetsFlexibleResponse,
   type TargetType,
 } from '@/api/client';
 import { Badge } from '@/components/ui/badge';
@@ -27,9 +29,21 @@ export function AssetGroupsView() {
   const [targetValue, setTargetValue] = useState('');
   const [targetNotes, setTargetNotes] = useState('');
   const [jsonInput, setJsonInput] = useState(
-    '{\n  "schema_version": "1.0",\n  "items": [\n    { "target_type": "cidr", "value": "172.28.0.0/24", "notes": "Mock Lab" }\n  ]\n}',
+    '# Wklej IP, CIDR, domeny, !exclude, CSV lub JSON\n172.28.0.0/24\napp.lab.local',
   );
-  const [importResult, setImportResult] = useState<ImportTargetsJsonResponse | null>(null);
+  const [importFormat, setImportFormat] = useState<'auto' | 'raw' | 'csv' | 'json'>('auto');
+  const [startScanAfterImport, setStartScanAfterImport] = useState(false);
+  const [importResult, setImportResult] = useState<ImportTargetsFlexibleResponse | null>(null);
+  const targetsFileRef = useRef<HTMLInputElement>(null);
+
+  const [scanResultsFormat, setScanResultsFormat] = useState<'auto' | 'csv' | 'json'>('auto');
+  const [scanResultsContent, setScanResultsContent] = useState(
+    'ip_addr,port,protocol,service_name,vhost,http_status,title,technologies\n172.28.0.10,443,tcp,https,portal.lab.local,200,Admin Portal,nginx;react',
+  );
+  const [scanResultsSummary, setScanResultsSummary] = useState<ImportScanResultsResponse | null>(
+    null,
+  );
+  const scanResultsFileRef = useRef<HTMLInputElement>(null);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
 
   const [policyName, setPolicyName] = useState('');
@@ -70,6 +84,20 @@ export function AssetGroupsView() {
 
   const activeGroupId = selectedGroupId ?? groupsQuery.data?.items[0]?.id ?? null;
 
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [membersSavedMsg, setMembersSavedMsg] = useState(false);
+
+  const usersDirectoryQuery = useQuery({
+    queryKey: ['users-directory'],
+    queryFn: async () => {
+      const { data, error } = await apiClient.GET('/api/v1/users/directory');
+      if (error || !data) {
+        throw new Error(formatApiError(error, 'Failed to load user directory.'));
+      }
+      return data;
+    },
+  });
+
   const detailQuery = useQuery({
     queryKey: ['asset-group-detail', activeGroupId],
     enabled: Boolean(activeGroupId),
@@ -85,6 +113,34 @@ export function AssetGroupsView() {
       }
       return data;
     },
+  });
+
+  useEffect(() => {
+    setMembersSavedMsg(false);
+    setSelectedMemberIds((detailQuery.data?.members ?? []).map((m) => m.user_id));
+  }, [detailQuery.data?.group.id, detailQuery.data?.members]);
+
+  const setMembersMutation = useMutation({
+    mutationFn: async () => {
+      if (!activeGroupId) {
+        throw new Error('Select a group first.');
+      }
+      const { data, error } = await apiClient.PUT('/api/v1/asset-groups/{id}/members', {
+        params: { path: { id: activeGroupId } },
+        body: { user_ids: selectedMemberIds },
+      });
+      if (error || !data) {
+        throw new Error(formatApiError(error, 'Failed to update asset group members.'));
+      }
+      return data;
+    },
+    onSuccess: () => {
+      setFeedbackError(null);
+      setMembersSavedMsg(true);
+      void queryClient.invalidateQueries({ queryKey: ['asset-groups'] });
+      void queryClient.invalidateQueries({ queryKey: ['asset-group-detail', activeGroupId] });
+    },
+    onError: (err) => setFeedbackError(err.message),
   });
 
   const createGroupMutation = useMutation({
@@ -167,30 +223,22 @@ export function AssetGroupsView() {
     onError: (err) => setFeedbackError(err.message),
   });
 
-  const importJsonMutation = useMutation({
+  const importFlexibleMutation = useMutation({
     mutationFn: async (dryRun: boolean) => {
       if (!activeGroupId) {
-        throw new Error('Select an asset group before importing JSON targets.');
+        throw new Error('Select an asset group before importing targets.');
       }
-      let parsed: {
-        schema_version?: string;
-        items?: Array<{ target_type: TargetType; value: string; notes?: string | null }>;
-      };
-      try {
-        parsed = JSON.parse(jsonInput) as typeof parsed;
-      } catch {
-        throw new Error(t('io.invalidJson'));
-      }
-      const { data, error } = await apiClient.POST('/api/v1/import/targets', {
+      const { data, error } = await apiClient.POST('/api/v1/import/targets-flexible', {
         body: {
-          schema_version: parsed.schema_version ?? '1.0',
           asset_group_id: activeGroupId,
+          format: importFormat,
+          content: jsonInput,
           dry_run: dryRun,
-          items: parsed.items ?? [],
+          start_scan: dryRun ? false : startScanAfterImport,
         },
       });
       if (error || !data) {
-        throw new Error(formatApiError(error, 'JSON import failed.'));
+        throw new Error(formatApiError(error, 'Flexible target import failed.'));
       }
       return data;
     },
@@ -200,7 +248,39 @@ export function AssetGroupsView() {
       if (!summary.dry_run) {
         void queryClient.invalidateQueries({ queryKey: ['asset-groups'] });
         void queryClient.invalidateQueries({ queryKey: ['asset-group-detail', activeGroupId] });
+        if (summary.started_scan_run_id) {
+          void queryClient.invalidateQueries({ queryKey: ['scans'] });
+        }
       }
+    },
+    onError: (err) => setFeedbackError(err.message),
+  });
+
+  const importScanResultsMutation = useMutation({
+    mutationFn: async () => {
+      if (!activeGroupId) {
+        throw new Error('Select an asset group before importing scan results.');
+      }
+      const { data, error } = await apiClient.POST('/api/v1/import/scan-results', {
+        body: {
+          asset_group_id: activeGroupId,
+          format: scanResultsFormat,
+          content: scanResultsContent,
+          items: [],
+        },
+      });
+      if (error || !data) {
+        throw new Error(formatApiError(error, 'Scan results import failed.'));
+      }
+      return data;
+    },
+    onSuccess: (summary) => {
+      setFeedbackError(null);
+      setScanResultsSummary(summary);
+      void queryClient.invalidateQueries({ queryKey: ['hosts'] });
+      void queryClient.invalidateQueries({ queryKey: ['diffs'] });
+      void queryClient.invalidateQueries({ queryKey: ['services'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
     },
     onError: (err) => setFeedbackError(err.message),
   });
@@ -319,7 +399,15 @@ export function AssetGroupsView() {
                     }`}
                   >
                     <span className="font-medium">{grp.name}</span>
-                    <Badge variant="outline">{grp.target_count}</Badge>
+                    <div className="flex items-center gap-1.5">
+                      {(grp.assigned_user_ids?.length ?? 0) > 0 ? (
+                        <Badge variant="default" title={t('assetGroups.membersTitle')}>
+                          <Users className="mr-1 h-3 w-3" />
+                          {grp.assigned_user_ids?.length}
+                        </Badge>
+                      ) : null}
+                      <Badge variant="outline">{grp.target_count}</Badge>
+                    </div>
                   </button>
                 ))}
               </div>
@@ -379,10 +467,27 @@ export function AssetGroupsView() {
                 </CardDescription>
               </div>
               {canExport ? (
-                <Button variant="outline" size="sm" onClick={() => void handleExportJson()}>
-                  <Download className="h-4 w-4" />
-                  {t('io.exportJson')}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" onClick={() => void handleExportJson()}>
+                    <Download className="h-4 w-4" />
+                    {t('io.exportJson')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void downloadAuthorizedFile(
+                        activeGroupId
+                          ? `/api/v1/export/targets.csv?asset_group_id=${activeGroupId}`
+                          : '/api/v1/export/targets.csv',
+                        `asi-targets-${activeGroupId ?? 'all'}.csv`,
+                      ).catch((err: Error) => setFeedbackError(err.message))
+                    }
+                  >
+                    <Download className="h-4 w-4" />
+                    {t('io.exportCsv')}
+                  </Button>
+                </div>
               ) : null}
             </div>
           </CardHeader>
@@ -466,43 +571,242 @@ export function AssetGroupsView() {
               </table>
             </div>
 
-            {activeGroupId && canImport ? (
+            {activeGroupId ? (
               <div className="space-y-3 border-t border-border pt-4">
-                <div className="text-sm font-semibold">{t('io.importTitle')}</div>
-                <textarea
-                  rows={5}
-                  value={jsonInput}
-                  onChange={(e) => setJsonInput(e.target.value)}
-                  className="w-full rounded-md border border-border bg-background p-3 font-mono text-xs"
-                />
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => importJsonMutation.mutate(true)}
-                    disabled={importJsonMutation.isPending}
-                  >
-                    {t('io.dryRun')}
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => importJsonMutation.mutate(false)}
-                    disabled={importJsonMutation.isPending}
-                  >
-                    <Upload className="h-4 w-4" />
-                    {t('io.importJson')}
-                  </Button>
-                  {importResult ? (
-                    <span className="text-xs text-emerald-300">
-                      {t('io.importSummary', {
-                        received: importResult.received_count,
-                        inserted: importResult.inserted_count,
-                        skipped: importResult.skipped_duplicates,
-                      })}
-                    </span>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      <Users className="h-4 w-4 text-primary" />
+                      {t('assetGroups.membersTitle')}
+                    </div>
+                    <p className="text-xs text-muted-foreground">{t('assetGroups.membersSubtitle')}</p>
+                  </div>
+                  {canManageGroups ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setMembersMutation.mutate()}
+                      disabled={setMembersMutation.isPending}
+                    >
+                      {t('assetGroups.saveMembers')}
+                    </Button>
                   ) : null}
                 </div>
+
+                {membersSavedMsg ? (
+                  <div className="rounded-md border border-emerald-800 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-300">
+                    {t('assetGroups.membersSaved')}
+                  </div>
+                ) : null}
+
+                {detailQuery.data?.members?.length ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {detailQuery.data.members.map((m) => (
+                      <Badge key={m.user_id} variant="default">
+                        {m.username} ({m.role})
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">{t('assetGroups.membersAllFallback')}</p>
+                )}
+
+                {canManageGroups && (usersDirectoryQuery.data?.length ?? 0) > 0 ? (
+                  <div className="flex flex-wrap gap-2 rounded-md border border-border bg-background/50 p-3 text-xs">
+                    {usersDirectoryQuery.data?.map((u) => {
+                      const checked = selectedMemberIds.includes(u.id);
+                      return (
+                        <label
+                          key={u.id}
+                          className="flex cursor-pointer items-center gap-1.5 rounded border border-border px-2.5 py-1.5 hover:bg-secondary/50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              setMembersSavedMsg(false);
+                              setSelectedMemberIds((prev) =>
+                                e.target.checked
+                                  ? [...prev, u.id]
+                                  : prev.filter((id) => id !== u.id),
+                              );
+                            }}
+                          />
+                          <span className="font-medium">{u.username}</span>
+                          <span className="text-muted-foreground">({u.role})</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
+            ) : null}
+
+            {activeGroupId && canImport ? (
+              <>
+                <div className="space-y-3 border-t border-border pt-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-semibold">{t('io.importFlexibleTitle')}</div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={importFormat}
+                        onChange={(e) =>
+                          setImportFormat(e.target.value as 'auto' | 'raw' | 'csv' | 'json')
+                        }
+                        className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                      >
+                        <option value="auto">auto</option>
+                        <option value="raw">raw (IP/CIDR/domain)</option>
+                        <option value="csv">CSV</option>
+                        <option value="json">JSON</option>
+                      </select>
+                      <input
+                        ref={targetsFileRef}
+                        type="file"
+                        accept=".txt,.csv,.json"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            void file.text().then((txt) => setJsonInput(txt));
+                          }
+                          e.target.value = '';
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => targetsFileRef.current?.click()}
+                      >
+                        <Upload className="h-3.5 w-3.5" />
+                        {t('io.loadFile')}
+                      </Button>
+                    </div>
+                  </div>
+                  <textarea
+                    rows={5}
+                    value={jsonInput}
+                    onChange={(e) => setJsonInput(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background p-3 font-mono text-xs"
+                  />
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => importFlexibleMutation.mutate(true)}
+                      disabled={importFlexibleMutation.isPending}
+                    >
+                      {t('io.dryRun')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => importFlexibleMutation.mutate(false)}
+                      disabled={importFlexibleMutation.isPending}
+                    >
+                      <Upload className="h-4 w-4" />
+                      {t('io.importBtn')}
+                    </Button>
+                    <label className="flex items-center gap-1.5 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={startScanAfterImport}
+                        onChange={(e) => setStartScanAfterImport(e.target.checked)}
+                      />
+                      {t('io.startScanAfterImport')}
+                    </label>
+                    {importResult ? (
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-emerald-300">
+                        <span>
+                          {t('io.importSummary', {
+                            received: importResult.received_count,
+                            inserted: importResult.inserted_count,
+                            skipped: importResult.skipped_duplicates,
+                          })}
+                        </span>
+                        {Object.entries(importResult.detected_summary).map(([kind, cnt]) => (
+                          <Badge key={kind} variant="outline" className="text-[10px]">
+                            {kind}: {cnt}
+                          </Badge>
+                        ))}
+                        {importResult.started_scan_run_id ? (
+                          <Badge variant="success" className="text-[10px]">
+                            scan #{importResult.started_scan_run_id.slice(0, 8)}
+                          </Badge>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="space-y-3 border-t border-border pt-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-semibold">{t('io.importResultsTitle')}</div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={scanResultsFormat}
+                        onChange={(e) =>
+                          setScanResultsFormat(e.target.value as 'auto' | 'csv' | 'json')
+                        }
+                        className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                      >
+                        <option value="auto">auto</option>
+                        <option value="csv">CSV</option>
+                        <option value="json">JSON</option>
+                      </select>
+                      <input
+                        ref={scanResultsFileRef}
+                        type="file"
+                        accept=".csv,.json"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            void file.text().then((txt) => setScanResultsContent(txt));
+                          }
+                          e.target.value = '';
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => scanResultsFileRef.current?.click()}
+                      >
+                        <Upload className="h-3.5 w-3.5" />
+                        {t('io.loadFile')}
+                      </Button>
+                    </div>
+                  </div>
+                  <textarea
+                    rows={4}
+                    value={scanResultsContent}
+                    onChange={(e) => setScanResultsContent(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background p-3 font-mono text-xs"
+                  />
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button
+                      size="sm"
+                      onClick={() => importScanResultsMutation.mutate()}
+                      disabled={importScanResultsMutation.isPending}
+                    >
+                      <Upload className="h-4 w-4" />
+                      {t('io.importResultsBtn')}
+                    </Button>
+                    {scanResultsSummary ? (
+                      <span className="text-xs text-emerald-300">
+                        {t('io.importResultsSummary', {
+                          hosts: scanResultsSummary.hosts_upserted,
+                          ports: scanResultsSummary.ports_upserted,
+                          web: scanResultsSummary.web_observations_upserted,
+                          diffs: scanResultsSummary.diff_events_created,
+                        })}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              </>
             ) : null}
           </CardContent>
         </Card>

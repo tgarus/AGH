@@ -162,11 +162,33 @@ pub struct HostSummaryDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostCommentDto {
+    pub id: Uuid,
+    pub host_id: Uuid,
+    pub host_port_id: Option<Uuid>,
+    pub port: Option<i32>,
+    pub protocol: Option<String>,
+    pub author_id: Option<Uuid>,
+    pub author_name: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreateHostCommentRequest {
+    #[serde(default)]
+    pub host_port_id: Option<Uuid>,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HostDetailDto {
     pub host: HostSummaryDto,
     pub hostnames: Vec<HostHostnameDto>,
     pub ports: Vec<HostPortDto>,
     pub availability_samples: Vec<HostAvailabilitySampleDto>,
+    #[serde(default)]
+    pub comments: Vec<HostCommentDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -273,4 +295,48 @@ pub struct DashboardStatsDto {
     pub online_workers: i64,
     pub enabled_signatures: i64,
     pub enabled_notification_channels: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ScanAnalyticsPointDto {
+    pub scan_run_id: Uuid,
+    pub asset_group_id: Uuid,
+    pub asset_group_name: String,
+    pub status: String,
+    pub trigger_type: String,
+    pub total_targets: i32,
+    pub completed_chunks: i32,
+    pub total_chunks: i32,
+    pub duration_seconds: Option<i64>,
+    pub ema_chunk_ms: Option<f64>,
+    pub confirmed_diffs: i64,
+    pub variance_diffs: i64,
+    pub started_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PortCountDto {
+    pub port: i32,
+    pub protocol: String,
+    pub service_name: Option<String>,
+    pub host_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct GroupInventoryStatDto {
+    pub asset_group_id: Uuid,
+    pub asset_group_name: String,
+    pub active_hosts: i64,
+    pub open_ports: i64,
+    pub confirmed_diffs: i64,
+    pub total_scans: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DashboardAnalyticsDto {
+    pub recent_scans: Vec<ScanAnalyticsPointDto>,
+    pub top_open_ports: Vec<PortCountDto>,
+    pub group_stats: Vec<GroupInventoryStatDto>,
+    pub diffs_by_severity: std::collections::BTreeMap<String, i64>,
+    pub diffs_by_kind: std::collections::BTreeMap<String, i64>,
 }

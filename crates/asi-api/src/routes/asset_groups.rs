@@ -1,10 +1,12 @@
 use asi_common::assets::{
-    AddTargetsRequest, AssetGroupDetailDto, AssetGroupDto, AssetGroupTargetDto,
-    CreateAssetGroupRequest, TargetType, UpdateAssetGroupRequest,
+    AddTargetsRequest, AssetGroupDetailDto, AssetGroupDto, AssetGroupMemberDto,
+    AssetGroupTargetDto, CreateAssetGroupRequest, SetAssetGroupMembersRequest, TargetType,
+    UpdateAssetGroupRequest,
 };
 use asi_common::error::{DomainError, FieldViolation, ProblemDetails};
 use asi_common::pagination::{PaginatedResponse, PaginationMeta, PaginationQuery};
 use asi_common::rbac::Permission;
+use asi_common::rbac::Role;
 use asi_common::validation::validate_target_value;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -46,6 +48,7 @@ impl From<AssetGroupRow> for AssetGroupDto {
             sampling_enabled: row.sampling_enabled,
             external_refs: row.external_refs,
             target_count: row.target_count,
+            assigned_user_ids: Vec::new(),
             created_by: row.created_by,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -107,10 +110,21 @@ pub async fn list_asset_groups(
     let pool = require_db(&state, auth.request_id, instance)?;
     let pg = query.sanitized();
 
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM asset_groups")
-        .fetch_one(pool)
-        .await
-        .map_err(|err| map_db_err(err, "count failed", auth.request_id, instance))?;
+    let is_admin = auth.user.role == Role::Admin;
+    let total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM asset_groups ag
+        WHERE $1::bool
+           OR NOT EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = ag.id)
+           OR EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = ag.id AND m.user_id = $2)
+        "#,
+    )
+    .bind(is_admin)
+    .bind(auth.user.id)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| map_db_err(err, "count failed", auth.request_id, instance))?;
 
     let rows: Vec<AssetGroupRow> = sqlx::query_as(
         r#"
@@ -118,18 +132,31 @@ pub async fn list_asset_groups(
                ag.external_refs, COUNT(agt.id) AS target_count, ag.created_by, ag.created_at, ag.updated_at
         FROM asset_groups ag
         LEFT JOIN asset_group_targets agt ON agt.asset_group_id = ag.id
+        WHERE $1::bool
+           OR NOT EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = ag.id)
+           OR EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = ag.id AND m.user_id = $2)
         GROUP BY ag.id
         ORDER BY ag.created_at DESC
-        LIMIT $1 OFFSET $2
+        LIMIT $3 OFFSET $4
         "#,
     )
+    .bind(is_admin)
+    .bind(auth.user.id)
     .bind(i64::from(pg.per_page))
     .bind(i64::try_from(pg.offset).unwrap_or(i64::MAX))
     .fetch_all(pool)
     .await
     .map_err(|err| map_db_err(err, "query failed", auth.request_id, instance))?;
 
-    let items = rows.into_iter().map(AssetGroupDto::from).collect();
+    let member_map = fetch_all_group_member_ids(pool, auth.request_id, instance).await?;
+    let items: Vec<AssetGroupDto> = rows
+        .into_iter()
+        .map(|row| {
+            let mut dto = AssetGroupDto::from(row);
+            dto.assigned_user_ids = member_map.get(&dto.id).cloned().unwrap_or_default();
+            dto
+        })
+        .collect();
     let total_u64 = u64::try_from(total.max(0)).unwrap_or(0);
     Ok(Json(PaginatedResponse {
         items,
@@ -306,11 +333,217 @@ pub async fn get_asset_group(
         .map(|row| row.into_dto(auth.request_id, &instance))
         .collect::<Result<Vec<_>, _>>()?;
 
+    let members = fetch_group_members(pool, id, auth.request_id, &instance).await?;
+    let mut group_dto = AssetGroupDto::from(group_row);
+    group_dto.assigned_user_ids = members.iter().map(|m| m.user_id).collect();
+
     Ok(Json(AssetGroupDetailDto {
-        group: AssetGroupDto::from(group_row),
+        group: group_dto,
         policy: policy_row.into_dto(auth.request_id, &instance)?,
         targets,
+        members,
     }))
+}
+
+#[derive(FromRow)]
+struct AssetGroupMemberRow {
+    asset_group_id: Uuid,
+    user_id: Uuid,
+    username: String,
+    email: String,
+    role: String,
+    assigned_at: DateTime<Utc>,
+}
+
+async fn fetch_group_members(
+    pool: &sqlx::PgPool,
+    asset_group_id: Uuid,
+    request_id: Option<Uuid>,
+    instance: &str,
+) -> Result<Vec<AssetGroupMemberDto>, AppError> {
+    let rows: Vec<AssetGroupMemberRow> = sqlx::query_as(
+        r#"
+        SELECT agm.asset_group_id, agm.user_id, u.username, u.email, u.role, agm.assigned_at
+        FROM asset_group_members agm
+        INNER JOIN users u ON u.id = agm.user_id
+        WHERE agm.asset_group_id = $1
+        ORDER BY u.username ASC
+        "#,
+    )
+    .bind(asset_group_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| map_db_err(err, "group members lookup failed", request_id, instance))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let _ = row.asset_group_id;
+        let role = Role::from_db_str(&row.role).unwrap_or(Role::ReadOnly);
+        out.push(AssetGroupMemberDto {
+            user_id: row.user_id,
+            username: row.username,
+            email: row.email,
+            role,
+            assigned_at: row.assigned_at,
+        });
+    }
+    Ok(out)
+}
+
+async fn fetch_all_group_member_ids(
+    pool: &sqlx::PgPool,
+    request_id: Option<Uuid>,
+    instance: &str,
+) -> Result<std::collections::HashMap<Uuid, Vec<Uuid>>, AppError> {
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT asset_group_id, user_id FROM asset_group_members ORDER BY assigned_at ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| map_db_err(err, "group members map failed", request_id, instance))?;
+
+    let mut map: std::collections::HashMap<Uuid, Vec<Uuid>> = std::collections::HashMap::new();
+    for (gid, uid) in rows {
+        map.entry(gid).or_default().push(uid);
+    }
+    Ok(map)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/asset-groups/{id}/members",
+    tag = "AssetGroups",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Asset group UUID")),
+    responses(
+        (status = 200, description = "Assigned users for asset group", body = Vec<AssetGroupMemberDto>),
+        (status = 404, description = "Asset group not found", body = ProblemDetails)
+    )
+)]
+pub async fn list_asset_group_members(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<AssetGroupMemberDto>>, AppError> {
+    let instance = format!("/api/v1/asset-groups/{id}/members");
+    auth.require(Permission::ViewInventoryAndDiffs, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM asset_groups WHERE id = $1)")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|err| map_db_err(err, "group check failed", auth.request_id, &instance))?;
+
+    if !exists {
+        return Err(AppError::new(
+            DomainError::NotFound(format!("Asset group {id} not found.")),
+            auth.request_id,
+            Some(instance),
+        ));
+    }
+
+    let members = fetch_group_members(pool, id, auth.request_id, &instance).await?;
+    Ok(Json(members))
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/asset-groups/{id}/members",
+    tag = "AssetGroups",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Asset group UUID")),
+    request_body = SetAssetGroupMembersRequest,
+    responses(
+        (status = 200, description = "Updated assigned users for asset group", body = Vec<AssetGroupMemberDto>),
+        (status = 404, description = "Asset group not found", body = ProblemDetails)
+    )
+)]
+pub async fn set_asset_group_members(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<SetAssetGroupMembersRequest>,
+) -> Result<Json<Vec<AssetGroupMemberDto>>, AppError> {
+    let instance = format!("/api/v1/asset-groups/{id}/members");
+    auth.require(Permission::ManageAssetGroups, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+    let source_ip = extract_source_ip(&headers);
+
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM asset_groups WHERE id = $1)")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|err| map_db_err(err, "group check failed", auth.request_id, &instance))?;
+
+    if !exists {
+        return Err(AppError::new(
+            DomainError::NotFound(format!("Asset group {id} not found.")),
+            auth.request_id,
+            Some(instance),
+        ));
+    }
+
+    let mut unique_ids = Vec::new();
+    for uid in payload.user_ids {
+        if !unique_ids.contains(&uid) {
+            unique_ids.push(uid);
+        }
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| map_db_err(err, "transaction error", auth.request_id, &instance))?;
+
+    sqlx::query("DELETE FROM asset_group_members WHERE asset_group_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| map_db_err(err, "clear members failed", auth.request_id, &instance))?;
+
+    for uid in &unique_ids {
+        sqlx::query(
+            r#"
+            INSERT INTO asset_group_members (asset_group_id, user_id, assigned_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (asset_group_id, user_id) DO NOTHING
+            "#,
+        )
+        .bind(id)
+        .bind(uid)
+        .bind(auth.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| map_db_err(err, "insert member failed", auth.request_id, &instance))?;
+    }
+
+    insert_audit_log(
+        &mut *tx,
+        AuditRecord {
+            actor_type: "user",
+            actor_id: Some(auth.user.id),
+            action: "asset_group.members_updated",
+            resource_type: "asset_group",
+            resource_id: Some(id),
+            before_state: None,
+            after_state: Some(serde_json::json!({ "user_ids": unique_ids })),
+            source_ip,
+            request_id: auth.request_id,
+        },
+    )
+    .await
+    .map_err(|err| map_db_err(err, "audit log failed", auth.request_id, &instance))?;
+
+    tx.commit()
+        .await
+        .map_err(|err| map_db_err(err, "commit failed", auth.request_id, &instance))?;
+
+    let members = fetch_group_members(pool, id, auth.request_id, &instance).await?;
+    Ok(Json(members))
 }
 
 #[utoipa::path(
@@ -423,7 +656,10 @@ pub async fn update_asset_group(
         )
     })?;
 
-    let after_dto = AssetGroupDto::from(updated);
+    let mut after_dto = AssetGroupDto::from(updated);
+    if let Ok(members) = fetch_group_members(pool, id, auth.request_id, &instance).await {
+        after_dto.assigned_user_ids = members.into_iter().map(|m| m.user_id).collect();
+    }
     insert_audit_log(
         &mut *tx,
         AuditRecord {

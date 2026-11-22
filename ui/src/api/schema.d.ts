@@ -36,6 +36,22 @@ export interface paths {
         patch: operations["update_asset_group"];
         trace?: never;
     };
+    "/api/v1/asset-groups/{id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_asset_group_members"];
+        put: operations["set_asset_group_members"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/asset-groups/{id}/targets": {
         parameters: {
             query?: never;
@@ -164,6 +180,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dashboard/analytics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["dashboard_analytics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dashboard/summary": {
         parameters: {
             query?: never;
@@ -244,6 +276,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/export/diffs.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["export_diffs_csv"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/export/hosts": {
         parameters: {
             query?: never;
@@ -252,6 +300,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["export_hosts_json"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/export/hosts.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["export_hosts_csv"];
         put?: never;
         post?: never;
         delete?: never;
@@ -308,6 +372,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/export/services.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["export_services_csv"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/export/targets": {
         parameters: {
             query?: never;
@@ -316,6 +396,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["export_targets_json"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/export/targets.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["export_targets_csv"];
         put?: never;
         post?: never;
         delete?: never;
@@ -372,6 +468,38 @@ export interface paths {
         patch: operations["update_host_metadata"];
         trace?: never;
     };
+    "/api/v1/hosts/{id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_host_comments"];
+        put?: never;
+        post: operations["create_host_comment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/hosts/{id}/comments/{comment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_host_comment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/hosts/{id}/tarpit-override": {
         parameters: {
             query?: never;
@@ -420,6 +548,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/import/scan-results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["import_scan_results"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/import/signatures": {
         parameters: {
             query?: never;
@@ -452,6 +596,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/import/targets-flexible": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["import_targets_flexible"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integrations/defectdojo": {
         parameters: {
             query?: never;
@@ -461,6 +621,22 @@ export interface paths {
         };
         get: operations["get_defectdojo_config"];
         put: operations["update_defectdojo_config"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/defectdojo/host-link/{host_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_dd_host_link"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -494,6 +670,102 @@ export interface paths {
         get: operations["list_dd_outbox"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/defectdojo/outbox/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retry_failed_dd_outbox"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/defectdojo/override/diff/{diff_event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["save_diff_defectdojo_override"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/defectdojo/override/host/{host_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["save_host_defectdojo_override"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/defectdojo/preview/diff/{diff_event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["preview_diff_defectdojo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/defectdojo/preview/host/{host_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["preview_host_defectdojo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/defectdojo/push-host/{host_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["push_host_to_defectdojo"];
         delete?: never;
         options?: never;
         head?: never;
@@ -596,6 +868,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notifications/channels/{id}/trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["trigger_custom_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications/deliveries": {
         parameters: {
             query?: never;
@@ -692,6 +980,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/scans/quick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["quick_scan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scans/recurring": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_recurring_scans"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scans/recurring/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_recurring_scan"];
+        options?: never;
+        head?: never;
+        patch: operations["update_recurring_scan"];
+        trace?: never;
+    };
+    "/api/v1/scans/recurring/{id}/run-now": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["trigger_recurring_scan_now"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/scans/{id}": {
         parameters: {
             query?: never;
@@ -716,6 +1068,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["list_scan_chunks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scans/{id}/explore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["explore_scan"];
         put?: never;
         post?: never;
         delete?: never;
@@ -868,6 +1236,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/users/directory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_users_directory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users/{id}": {
         parameters: {
             query?: never;
@@ -941,10 +1325,12 @@ export interface components {
         };
         AssetGroupDetailDto: {
             group: components["schemas"]["AssetGroupDto"];
+            members?: components["schemas"]["AssetGroupMemberDto"][];
             policy: components["schemas"]["ScanPolicyDto"];
             targets: components["schemas"]["AssetGroupTargetDto"][];
         };
         AssetGroupDto: {
+            assigned_user_ids?: string[];
             /** Format: date-time */
             created_at: string;
             /** Format: uuid */
@@ -962,6 +1348,15 @@ export interface components {
             target_count: number;
             /** Format: date-time */
             updated_at: string;
+        };
+        AssetGroupMemberDto: {
+            /** Format: date-time */
+            assigned_at: string;
+            email: string;
+            role: components["schemas"]["Role"];
+            /** Format: uuid */
+            user_id: string;
+            username: string;
         };
         AssetGroupTargetDto: {
             /** Format: uuid */
@@ -1088,6 +1483,11 @@ export interface components {
             sampling_enabled?: boolean | null;
             schedule_cron?: string | null;
         };
+        CreateHostCommentRequest: {
+            content: string;
+            /** Format: uuid */
+            host_port_id?: string | null;
+        };
         CreateIgnoredTargetRequest: {
             /** Format: uuid */
             asset_group_id?: string | null;
@@ -1105,6 +1505,7 @@ export interface components {
             notify_on_confirmed?: boolean | null;
             notify_on_variance?: boolean | null;
             secret?: string | null;
+            subscribed_events?: string[] | null;
         };
         CreateScanPolicyRequest: {
             discovery_tool: components["schemas"]["DiscoveryTool"];
@@ -1137,14 +1538,28 @@ export interface components {
             username: string;
         };
         CreateWorkerTokenRequest: {
+            allowed_asset_group_ids?: string[] | null;
+            allowed_user_ids?: string[] | null;
             /** Format: int32 */
             max_concurrency?: number | null;
             name: string;
             segment_tag?: string | null;
+            visibility_scope?: string | null;
         };
         CreateWorkerTokenResponse: {
             token: string;
             worker: components["schemas"]["WorkerNodeDto"];
+        };
+        DashboardAnalyticsDto: {
+            diffs_by_kind: {
+                [key: string]: number;
+            };
+            diffs_by_severity: {
+                [key: string]: number;
+            };
+            group_stats: components["schemas"]["GroupInventoryStatDto"][];
+            recent_scans: components["schemas"]["ScanAnalyticsPointDto"][];
+            top_open_ports: components["schemas"]["PortCountDto"][];
         };
         DashboardStatsDto: {
             /** Format: int64 */
@@ -1174,11 +1589,59 @@ export interface components {
             /** Format: int64 */
             web_observations: number;
         };
+        DdFindingPayloadOverride: {
+            active?: boolean | null;
+            component_name?: string | null;
+            custom_fields?: unknown;
+            description?: string | null;
+            extra_notes?: string | null;
+            false_p?: boolean | null;
+            impact?: string | null;
+            mitigation?: string | null;
+            numerical_severity?: string | null;
+            out_of_scope?: boolean | null;
+            references?: string | null;
+            severity?: string | null;
+            tags?: string[] | null;
+            title?: string | null;
+            verified?: boolean | null;
+        };
+        DdFindingPreviewDto: {
+            asset_group_name: string;
+            default_payload: components["schemas"]["DdFindingUpsert"];
+            effective_payload: components["schemas"]["DdFindingUpsert"];
+            ip_addr: string;
+            saved_override?: null | components["schemas"]["DdFindingPayloadOverride"];
+            /** Format: uuid */
+            target_id: string;
+            target_kind: string;
+        };
         /**
          * @description Zakres danych publikowanych do DefectDojo jako findingi.
          * @enum {string}
          */
         DdFindingScope: "changes" | "all_diffs" | "inventory";
+        DdFindingUpsert: {
+            active: boolean;
+            component_name?: string | null;
+            custom_fields?: unknown;
+            date: string;
+            description: string;
+            false_p?: boolean | null;
+            found_by?: number[];
+            impact?: string | null;
+            mitigation?: string | null;
+            numerical_severity?: string;
+            out_of_scope?: boolean | null;
+            references?: string | null;
+            severity: string;
+            tags?: string[];
+            /** Format: int32 */
+            test: number;
+            title: string;
+            unique_id_from_tool: string;
+            verified: boolean;
+        };
         /** @description Powiazanie diff_event z obiektem Finding w DefectDojo (do wyswietlenia w UI). */
         DdLinkDto: {
             /** Format: int32 */
@@ -1224,6 +1687,17 @@ export interface components {
             enqueued: boolean;
             note: string;
         };
+        DdPushHostResponse: {
+            /** Format: int32 */
+            dd_finding_id: number;
+            /** Format: uuid */
+            host_id: string;
+            note: string;
+        };
+        DdRetryOutboxResponse: {
+            /** Format: int64 */
+            retried_count: number;
+        };
         /** @description Reczny sync: jedna grupa albo wszystkie (None = wszystkie aktywne grupy). */
         DdSyncRequest: {
             /** Format: uuid */
@@ -1242,6 +1716,7 @@ export interface components {
         };
         /** @description Konfiguracja integracji (sekret API key nigdy nie opuszcza backendu). */
         DefectDojoConfigDto: {
+            asi_public_url?: string;
             auto_push: boolean;
             base_url: string;
             enabled: boolean;
@@ -1365,6 +1840,19 @@ export interface components {
             id: string;
             info: components["schemas"]["TemplateInfo"];
         };
+        GroupInventoryStatDto: {
+            /** Format: int64 */
+            active_hosts: number;
+            /** Format: uuid */
+            asset_group_id: string;
+            asset_group_name: string;
+            /** Format: int64 */
+            confirmed_diffs: number;
+            /** Format: int64 */
+            open_ports: number;
+            /** Format: int64 */
+            total_scans: number;
+        };
         HealthResponse: {
             service: string;
             status: string;
@@ -1409,8 +1897,26 @@ export interface components {
             scan_run_id?: string | null;
             time_slot: components["schemas"]["TimeSlot"];
         };
+        HostCommentDto: {
+            /** Format: uuid */
+            author_id?: string | null;
+            author_name: string;
+            content: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            host_id: string;
+            /** Format: uuid */
+            host_port_id?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: int32 */
+            port?: number | null;
+            protocol?: string | null;
+        };
         HostDetailDto: {
             availability_samples: components["schemas"]["HostAvailabilitySampleDto"][];
+            comments?: components["schemas"]["HostCommentDto"][];
             host: components["schemas"]["HostSummaryDto"];
             hostnames: components["schemas"]["HostHostnameDto"][];
             ports: components["schemas"]["HostPortDto"][];
@@ -1499,6 +2005,21 @@ export interface components {
         };
         /** @enum {string} */
         IgnoredTargetType: "ip" | "cidr" | "domain";
+        ImportScanResultsRequest: {
+            /** Format: uuid */
+            asset_group_id: string;
+            content?: string | null;
+            format?: string | null;
+            items?: components["schemas"]["ScanResultImportItem"][];
+        };
+        ImportScanResultsResponse: {
+            /** Format: uuid */
+            asset_group_id: string;
+            diff_events_created: number;
+            hosts_upserted: number;
+            ports_upserted: number;
+            web_observations_upserted: number;
+        };
         ImportSignaturesJsonRequest: {
             dry_run?: boolean;
             items: string[];
@@ -1509,6 +2030,29 @@ export interface components {
             received_count: number;
             schema_version: string;
             upserted_count: number;
+        };
+        ImportTargetsFlexibleRequest: {
+            /** Format: uuid */
+            asset_group_id?: string | null;
+            content: string;
+            dry_run?: boolean;
+            format?: string | null;
+            new_group_name?: string | null;
+            start_scan?: boolean;
+        };
+        ImportTargetsFlexibleResponse: {
+            /** Format: uuid */
+            asset_group_id: string;
+            asset_group_name: string;
+            detected_summary: {
+                [key: string]: number;
+            };
+            dry_run: boolean;
+            inserted_count: number;
+            received_count: number;
+            skipped_duplicates: number;
+            /** Format: uuid */
+            started_scan_run_id?: string | null;
         };
         ImportTargetsJsonRequest: {
             /** Format: uuid */
@@ -1555,6 +2099,7 @@ export interface components {
             name: string;
             notify_on_confirmed: boolean;
             notify_on_variance: boolean;
+            subscribed_events?: string[];
             /** Format: date-time */
             updated_at: string;
         };
@@ -1568,8 +2113,10 @@ export interface components {
             channel_name: string;
             /** Format: date-time */
             created_at: string;
+            custom_payload?: unknown;
             /** Format: uuid */
-            diff_event_id: string;
+            diff_event_id?: string | null;
+            event_type: string;
             /** Format: uuid */
             id: string;
             last_error?: string | null;
@@ -1596,6 +2143,7 @@ export interface components {
         };
         PaginatedResponse_AssetGroupDto: {
             items: {
+                assigned_user_ids?: string[];
                 /** Format: date-time */
                 created_at: string;
                 /** Format: uuid */
@@ -1759,6 +2307,7 @@ export interface components {
                 name: string;
                 notify_on_confirmed: boolean;
                 notify_on_variance: boolean;
+                subscribed_events?: string[];
                 /** Format: date-time */
                 updated_at: string;
             }[];
@@ -1773,8 +2322,10 @@ export interface components {
                 channel_name: string;
                 /** Format: date-time */
                 created_at: string;
+                custom_payload?: unknown;
                 /** Format: uuid */
-                diff_event_id: string;
+                diff_event_id?: string | null;
+                event_type: string;
                 /** Format: uuid */
                 id: string;
                 last_error?: string | null;
@@ -1857,6 +2408,8 @@ export interface components {
                 finished_at?: string | null;
                 /** Format: uuid */
                 id: string;
+                include_all_ignored?: boolean;
+                overridden_ignored_values?: string[];
                 policy_snapshot: unknown;
                 /** Format: date-time */
                 started_at: string;
@@ -1947,7 +2500,11 @@ export interface components {
         };
         PaginatedResponse_WorkerNodeDto: {
             items: {
+                allowed_asset_group_ids?: string[];
+                allowed_user_ids?: string[];
                 capabilities: unknown;
+                /** Format: uuid */
+                created_by?: string | null;
                 /** Format: uuid */
                 id: string;
                 /** Format: date-time */
@@ -1961,6 +2518,7 @@ export interface components {
                 revoked_at?: string | null;
                 segment_tag?: string | null;
                 status: components["schemas"]["WorkerNodeStatus"];
+                visibility_scope?: string;
             }[];
             pagination: components["schemas"]["PaginationMeta"];
         };
@@ -1997,11 +2555,21 @@ export interface components {
             /** Format: int32 */
             tarpit_port_threshold: number;
         };
+        PortCountDto: {
+            /** Format: int64 */
+            host_count: number;
+            /** Format: int32 */
+            port: number;
+            protocol: string;
+            service_name?: string | null;
+        };
         /** @enum {string} */
         PortState: "active" | "missing_pending" | "closed";
         PreflightRequest: {
             /** Format: uuid */
             asset_group_id: string;
+            include_all_ignored?: boolean;
+            include_ignored_ids?: string[];
             /** Format: int32 */
             window_minutes?: number | null;
         };
@@ -2015,6 +2583,8 @@ export interface components {
             /** Format: int32 */
             estimated_ports_per_host: number;
             fits_in_window: boolean;
+            matched_ignored_targets?: components["schemas"]["IgnoredTargetDto"][];
+            overridden_ignored_count?: number;
             /** Format: int32 */
             total_chunks: number;
             /** Format: int32 */
@@ -2034,17 +2604,110 @@ export interface components {
             type: string;
             violations?: components["schemas"]["FieldViolation"][];
         };
+        QuickScanRequest: {
+            /** Format: uuid */
+            asset_group_id?: string | null;
+            group_name?: string | null;
+            include_all_ignored?: boolean;
+            include_ignored_ids?: string[];
+            port_spec?: string | null;
+            /** Format: int32 */
+            rate_pps?: number | null;
+            targets_raw: string;
+        };
+        QuickScanResponse: {
+            /** Format: uuid */
+            asset_group_id: string;
+            asset_group_name: string;
+            imported_targets: number;
+            scan_run: components["schemas"]["ScanRunDto"];
+        };
         ReadinessResponse: {
             database: components["schemas"]["ComponentStatus"];
             status: components["schemas"]["ComponentStatus"];
             /** Format: date-time */
             timestamp: string;
         };
+        RecurringScanScheduleDto: {
+            /** Format: uuid */
+            asset_group_id: string;
+            asset_group_name: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            created_by?: string | null;
+            first_run_time: string;
+            /** Format: uuid */
+            id: string;
+            include_all_ignored: boolean;
+            include_ignored_ids: string[];
+            interval_unit: string;
+            /** Format: int32 */
+            interval_value: number;
+            /** Format: date-time */
+            last_run_at?: string | null;
+            /** Format: uuid */
+            last_scan_run_id?: string | null;
+            /** Format: date-time */
+            next_run_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: int32 */
+            window_minutes: number;
+        };
         /**
          * @description Built-in RBAC roles enforced across asi-api endpoints.
          * @enum {string}
          */
         Role: "Admin" | "ReadWriteDelete" | "ReadWrite" | "ReadOnly";
+        ScanAnalyticsPointDto: {
+            /** Format: uuid */
+            asset_group_id: string;
+            asset_group_name: string;
+            /** Format: int32 */
+            completed_chunks: number;
+            /** Format: int64 */
+            confirmed_diffs: number;
+            /** Format: int64 */
+            duration_seconds?: number | null;
+            /** Format: double */
+            ema_chunk_ms?: number | null;
+            /** Format: uuid */
+            scan_run_id: string;
+            /** Format: date-time */
+            started_at: string;
+            status: string;
+            /** Format: int32 */
+            total_chunks: number;
+            /** Format: int32 */
+            total_targets: number;
+            trigger_type: string;
+            /** Format: int64 */
+            variance_diffs: number;
+        };
+        ScanChunkDetailDto: {
+            /** Format: int32 */
+            attempt_no: number;
+            /** Format: date-time */
+            completed_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: int32 */
+            duration_ms?: number | null;
+            error_message?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            lease_expires_at?: string | null;
+            /** Format: uuid */
+            leased_by_worker_id?: string | null;
+            leased_by_worker_name?: string | null;
+            /** Format: int32 */
+            sequence_no: number;
+            status: components["schemas"]["ChunkStatus"];
+            subnet_bucket: string;
+            target_ips: string[];
+        };
         ScanChunkDto: {
             /** Format: int32 */
             attempt_no: number;
@@ -2068,6 +2731,26 @@ export interface components {
             status: components["schemas"]["ChunkStatus"];
             subnet_bucket: string;
             targets: unknown;
+        };
+        ScanExplorationDto: {
+            asset_group_name: string;
+            audit_logs: components["schemas"]["AuditLogDto"][];
+            chunks: components["schemas"]["ScanChunkDetailDto"][];
+            diffs: components["schemas"]["DiffEventDto"][];
+            host_samples: components["schemas"]["ScanHostSampleDto"][];
+            scan: components["schemas"]["ScanRunDto"];
+        };
+        ScanHostSampleDto: {
+            /** Format: uuid */
+            host_id: string;
+            ip_address: string;
+            is_alive: boolean;
+            open_ports: number[];
+            open_ports_hash: string;
+            /** Format: date-time */
+            sampled_at: string;
+            status: string;
+            time_slot: string;
         };
         ScanPolicyDto: {
             /** Format: date-time */
@@ -2114,6 +2797,22 @@ export interface components {
             /** Format: int32 */
             total_chunks: number;
         };
+        ScanResultImportItem: {
+            /** Format: int32 */
+            http_status?: number | null;
+            ip_addr: string;
+            notes?: string | null;
+            /** Format: int32 */
+            port: number;
+            product?: string | null;
+            protocol?: string;
+            scheme?: string | null;
+            service_name?: string | null;
+            technologies?: string[];
+            title?: string | null;
+            version?: string | null;
+            vhost?: string | null;
+        };
         ScanRunDto: {
             /** Format: uuid */
             asset_group_id: string;
@@ -2129,6 +2828,8 @@ export interface components {
             finished_at?: string | null;
             /** Format: uuid */
             id: string;
+            include_all_ignored?: boolean;
+            overridden_ignored_values?: string[];
             policy_snapshot: unknown;
             /** Format: date-time */
             started_at: string;
@@ -2193,6 +2894,9 @@ export interface components {
             version?: string | null;
             vhost?: string | null;
         };
+        SetAssetGroupMembersRequest: {
+            user_ids?: string[];
+        };
         SignatureRuleDto: {
             content_sha256: string;
             /** Format: date-time */
@@ -2214,7 +2918,7 @@ export interface components {
             yaml_content: string;
         };
         /** @enum {string} */
-        SignatureRuleSource: "fingerprinthub" | "custom";
+        SignatureRuleSource: "fingerprinthub" | "fingerprinthub_repo" | "custom";
         /** @enum {string} */
         SortDir: "asc" | "desc";
         Stage1PortFinding: {
@@ -2268,8 +2972,17 @@ export interface components {
         StartScanRequest: {
             /** Format: uuid */
             asset_group_id: string;
+            first_run_time?: string | null;
+            include_all_ignored?: boolean;
+            include_ignored_ids?: string[];
+            interval_unit?: string | null;
+            /** Format: int32 */
+            interval_value?: number | null;
+            recurring_enabled?: boolean;
             time_slot?: null | components["schemas"]["TimeSlot"];
             trigger_type?: null | components["schemas"]["ScanTriggerType"];
+            /** Format: int32 */
+            window_minutes?: number | null;
         };
         SyncSignaturesResponse: {
             builtin_count?: number;
@@ -2327,6 +3040,10 @@ export interface components {
             sha256_fingerprint: string;
             subject_cn?: string | null;
         };
+        TriggerCustomWebhookRequest: {
+            event_type: string;
+            payload: unknown;
+        };
         UpdateAssetGroupRequest: {
             description?: string | null;
             name?: string | null;
@@ -2359,6 +3076,17 @@ export interface components {
             notify_on_confirmed?: boolean | null;
             notify_on_variance?: boolean | null;
             secret?: string | null;
+            subscribed_events?: string[] | null;
+        };
+        UpdateRecurringScanRequest: {
+            first_run_time?: string | null;
+            include_all_ignored?: boolean | null;
+            include_ignored_ids?: string[] | null;
+            interval_unit?: string | null;
+            /** Format: int32 */
+            interval_value?: number | null;
+            /** Format: int32 */
+            window_minutes?: number | null;
         };
         UpdateScanPolicyRequest: {
             discovery_tool?: null | components["schemas"]["DiscoveryTool"];
@@ -2460,7 +3188,11 @@ export interface components {
             scan_run_id?: string | null;
         };
         WorkerNodeDto: {
+            allowed_asset_group_ids?: string[];
+            allowed_user_ids?: string[];
             capabilities: unknown;
+            /** Format: uuid */
+            created_by?: string | null;
             /** Format: uuid */
             id: string;
             /** Format: date-time */
@@ -2474,6 +3206,7 @@ export interface components {
             revoked_at?: string | null;
             segment_tag?: string | null;
             status: components["schemas"]["WorkerNodeStatus"];
+            visibility_scope?: string;
         };
         /** @enum {string} */
         WorkerNodeStatus: "online" | "offline" | "draining" | "revoked";
@@ -2669,6 +3402,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AssetGroupDto"];
+                };
+            };
+            /** @description Asset group not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    list_asset_group_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Asset group UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Assigned users for asset group */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetGroupMemberDto"][];
+                };
+            };
+            /** @description Asset group not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    set_asset_group_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Asset group UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAssetGroupMembersRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated assigned users for asset group */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetGroupMemberDto"][];
                 };
             };
             /** @description Asset group not found */
@@ -2963,6 +3764,26 @@ export interface operations {
             };
         };
     };
+    dashboard_analytics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Platform analytics time series and distributions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardAnalyticsDto"];
+                };
+            };
+        };
+    };
     dashboard_summary: {
         parameters: {
             query?: never;
@@ -3106,6 +3927,37 @@ export interface operations {
             };
         };
     };
+    export_diffs_csv: {
+        parameters: {
+            query?: {
+                asset_group_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Diff events exported as CSV */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     export_hosts_json: {
         parameters: {
             query?: {
@@ -3124,6 +3976,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExportHostsEnvelope"];
+                };
+            };
+        };
+    };
+    export_hosts_csv: {
+        parameters: {
+            query?: {
+                asset_group_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Hosts exported as CSV */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -3192,6 +4075,37 @@ export interface operations {
             };
         };
     };
+    export_services_csv: {
+        parameters: {
+            query?: {
+                asset_group_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Services exported as CSV */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     export_targets_json: {
         parameters: {
             query?: {
@@ -3210,6 +4124,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExportTargetsEnvelope"];
+                };
+            };
+        };
+    };
+    export_targets_csv: {
+        parameters: {
+            query?: {
+                asset_group_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Targets exported as CSV */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -3329,6 +4274,106 @@ export interface operations {
                 };
             };
             /** @description Host not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    list_host_comments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Host UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List host and port comments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostCommentDto"][];
+                };
+            };
+        };
+    };
+    create_host_comment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Host UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateHostCommentRequest"];
+            };
+        };
+        responses: {
+            /** @description Comment added to host or service */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostCommentDto"];
+                };
+            };
+            /** @description Validation error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Host or port not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    delete_host_comment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Host UUID */
+                id: string;
+                /** @description Comment UUID */
+                comment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Comment deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Comment not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3480,6 +4525,57 @@ export interface operations {
             };
         };
     };
+    import_scan_results: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportScanResultsRequest"];
+            };
+        };
+        responses: {
+            /** @description Imported scan results into inventory and emitted diffs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportScanResultsResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Asset group not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     import_signatures_json: {
         parameters: {
             query?: never;
@@ -3555,6 +4651,48 @@ export interface operations {
             };
         };
     };
+    import_targets_flexible: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportTargetsFlexibleRequest"];
+            };
+        };
+        responses: {
+            /** @description Flexible target import result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportTargetsFlexibleResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     get_defectdojo_config: {
         parameters: {
             query?: never;
@@ -3599,6 +4737,38 @@ export interface operations {
             };
             /** @description Validation error */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    get_dd_host_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description ASI host UUID */
+                host_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description DefectDojo link for host */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DdLinkDto"];
+                };
+            };
+            /** @description No host link yet */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3665,7 +4835,99 @@ export interface operations {
             };
         };
     };
-    push_diff_to_defectdojo: {
+    retry_failed_dd_outbox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reset failed outbox entries to pending and clear last_error */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DdRetryOutboxResponse"];
+                };
+            };
+        };
+    };
+    save_diff_defectdojo_override: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description ASI diff event UUID */
+                diff_event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DdFindingPayloadOverride"];
+            };
+        };
+        responses: {
+            /** @description Saved DefectDojo payload override for diff event */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DdFindingPreviewDto"];
+                };
+            };
+            /** @description Diff not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    save_host_defectdojo_override: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description ASI host UUID */
+                host_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DdFindingPayloadOverride"];
+            };
+        };
+        responses: {
+            /** @description Saved DefectDojo payload override for host */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DdFindingPreviewDto"];
+                };
+            };
+            /** @description Host not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    preview_diff_defectdojo: {
         parameters: {
             query?: never;
             header?: never;
@@ -3676,6 +4938,112 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Preview of DefectDojo finding payload + saved override for diff event */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DdFindingPreviewDto"];
+                };
+            };
+            /** @description Diff not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    preview_host_defectdojo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description ASI host UUID */
+                host_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Preview of DefectDojo finding payload + saved override for host */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DdFindingPreviewDto"];
+                };
+            };
+            /** @description Host not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    push_host_to_defectdojo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description ASI host UUID */
+                host_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional DefectDojo finding payload override applied before pushing host */
+        requestBody?: {
+            content: {
+                "application/json": null | components["schemas"]["DdFindingPayloadOverride"];
+            };
+        };
+        responses: {
+            /** @description Host pushed (or updated) to DefectDojo */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DdPushHostResponse"];
+                };
+            };
+            /** @description Host not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    push_diff_to_defectdojo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description ASI diff event UUID */
+                diff_event_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional DefectDojo finding payload override applied before pushing */
+        requestBody?: {
+            content: {
+                "application/json": null | components["schemas"]["DdFindingPayloadOverride"];
+            };
+        };
         responses: {
             /** @description Diff pushed (or updated) to DefectDojo */
             200: {
@@ -3728,7 +5096,12 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Optional unsaved base_url / api_key values to test before saving */
+        requestBody?: {
+            content: {
+                "application/json": null | components["schemas"]["UpdateDefectDojoConfigRequest"];
+            };
+        };
         responses: {
             /** @description Connection test result */
             200: {
@@ -3896,6 +5269,42 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Synthetic test notification dispatch outcome */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestNotificationResponse"];
+                };
+            };
+            /** @description Notification channel not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    trigger_custom_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Notification channel UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriggerCustomWebhookRequest"];
+            };
+        };
+        responses: {
+            /** @description Custom webhook event dispatched and recorded */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4219,6 +5628,175 @@ export interface operations {
             };
         };
     };
+    quick_scan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuickScanRequest"];
+            };
+        };
+        responses: {
+            /** @description Targets auto-detected, added to group, and scan started immediately */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuickScanResponse"];
+                };
+            };
+            /** @description Requires RunOrStopScans and ManageAssetGroups permissions */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Invalid targets or policy parameters */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    list_recurring_scans: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active recurring group scan schedules */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecurringScanScheduleDto"][];
+                };
+            };
+        };
+    };
+    delete_recurring_scan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Recurring scan schedule UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recurring schedule stopped and deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Schedule not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    update_recurring_scan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Recurring scan schedule UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRecurringScanRequest"];
+            };
+        };
+        responses: {
+            /** @description Recurring schedule updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecurringScanScheduleDto"];
+                };
+            };
+            /** @description Schedule not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    trigger_recurring_scan_now: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Recurring scan schedule UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Triggered recurring scan run immediately */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanRunDto"];
+                };
+            };
+            /** @description Schedule not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     get_scan: {
         parameters: {
             query?: never;
@@ -4275,6 +5853,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PaginatedResponse_ScanChunkDto"];
+                };
+            };
+        };
+    };
+    explore_scan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scan run UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deep exploration report for a scan run (chunks, workers, diffs, host samples, and audit trail) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanExplorationDto"];
+                };
+            };
+            /** @description Scan run not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -4722,6 +6332,35 @@ export interface operations {
             };
             /** @description Validation error */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    list_users_directory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active users directory for asset group & worker scoping */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserSummary"][];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

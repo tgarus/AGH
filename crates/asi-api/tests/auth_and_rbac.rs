@@ -276,7 +276,28 @@ async fn openapi_exposes_phase2_paths_and_no_csv_endpoints() {
         );
     }
 
-    assert!(!raw.to_ascii_lowercase().contains("text/csv"));
+    for expected in [
+        "/api/v1/scans/quick",
+        "/api/v1/notifications/channels/{id}/trigger",
+        "/api/v1/import/targets-flexible",
+        "/api/v1/import/scan-results",
+        "/api/v1/export/targets.csv",
+        "/api/v1/export/hosts.csv",
+        "/api/v1/export/services.csv",
+        "/api/v1/export/diffs.csv",
+        "/api/v1/integrations/defectdojo/preview/diff/{diff_event_id}",
+        "/api/v1/integrations/defectdojo/override/diff/{diff_event_id}",
+        "/api/v1/integrations/defectdojo/preview/host/{host_id}",
+        "/api/v1/integrations/defectdojo/override/host/{host_id}",
+        "/api/v1/integrations/defectdojo/push-host/{host_id}",
+        "/api/v1/integrations/defectdojo/host-link/{host_id}",
+    ] {
+        assert!(
+            raw.contains(expected),
+            "OpenAPI spec should expose path {expected}"
+        );
+    }
+    assert!(raw.to_ascii_lowercase().contains("text/csv"));
 }
 
 #[tokio::test]

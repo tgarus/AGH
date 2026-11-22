@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use asi_common::diff::{BulletItem, DiffOp};
@@ -6,10 +7,13 @@ use asi_common::notification::{NotificationChannelType, NotificationMessage, Not
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use chrono::Utc;
+use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use uuid::Uuid;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -155,25 +159,95 @@ async fn post_json_webhook(
 pub struct WebhookJsonSink {
     url: String,
     secret: Option<String>,
+    custom_headers: BTreeMap<String, String>,
+    custom_payload_data: Option<serde_json::Value>,
     http: Client,
 }
 
-#[async_trait]
-impl NotificationSink for WebhookJsonSink {
-    async fn send(&self, message: &NotificationMessage) -> Result<(), DomainError> {
-        let timestamp = message.detected_at.timestamp().to_string();
-        let payload = serde_json::json!({
-            "event": "diff.detected",
-            "delivery_id": message.delivery_id,
-            "diff_event_id": message.diff_event_id,
-            "asset_group_name": message.asset_group_name,
-            "host_id": message.host_id,
-            "ip_addr": message.ip_addr,
-            "event_kind": message.event_kind,
-            "severity": message.severity,
-            "bullet_items": message.bullet_items,
-            "detected_at": message.detected_at,
-        });
+fn parse_custom_headers(config: &serde_json::Value) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(obj) = config.get("custom_headers").and_then(|v| v.as_object()) else {
+        return out;
+    };
+    for (raw_k, raw_v) in obj {
+        let key = raw_k.trim();
+        let Some(val) = raw_v.as_str().map(str::trim) else {
+            continue;
+        };
+        if key.is_empty() || val.is_empty() {
+            continue;
+        }
+        let lower = key.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "content-type"
+                | "x-asi-event"
+                | "x-asi-delivery-id"
+                | "x-asi-timestamp"
+                | "x-asi-signature-256"
+        ) {
+            continue;
+        }
+        out.insert(key.to_string(), val.to_string());
+    }
+    out
+}
+
+fn parse_custom_payload_data(config: &serde_json::Value) -> Option<serde_json::Value> {
+    let val = config.get("custom_payload_data")?;
+    if val.is_null() {
+        return None;
+    }
+    if let Some(s) = val.as_str() {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        return serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .or_else(|| Some(serde_json::Value::String(trimmed.to_string())));
+    }
+    Some(val.clone())
+}
+
+fn merge_custom_payload(base: &mut serde_json::Value, custom: Option<&serde_json::Value>) {
+    let Some(extra) = custom else {
+        return;
+    };
+    let Some(obj) = base.as_object_mut() else {
+        return;
+    };
+    obj.insert("custom_data".to_string(), extra.clone());
+    if let Some(extra_obj) = extra.as_object() {
+        for (k, v) in extra_obj {
+            let key = k.trim();
+            if !key.is_empty() && !matches!(key, "event" | "delivery_id") {
+                obj.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+}
+
+fn summarize_custom_payload(
+    event_type: &str,
+    payload: &serde_json::Value,
+) -> (String, Vec<String>) {
+    let title = format!("[ASI] Event: {event_type}");
+    let pretty = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
+    let lines = pretty.lines().map(ToString::to_string).collect();
+    (title, lines)
+}
+
+impl WebhookJsonSink {
+    async fn send_signed_webhook(
+        &self,
+        event_type: &str,
+        delivery_id: Uuid,
+        timestamp: &str,
+        mut payload: serde_json::Value,
+    ) -> Result<(), DomainError> {
+        merge_custom_payload(&mut payload, self.custom_payload_data.as_ref());
+
         let raw_body = serde_json::to_string(&payload)
             .map_err(|err| DomainError::Internal(format!("json serialize failed: {err}")))?;
 
@@ -181,9 +255,18 @@ impl NotificationSink for WebhookJsonSink {
             .http
             .post(&self.url)
             .header("Content-Type", "application/json")
-            .header("X-ASI-Event", "diff.detected")
-            .header("X-ASI-Delivery-Id", message.delivery_id.to_string())
-            .header("X-ASI-Timestamp", &timestamp);
+            .header("X-ASI-Event", event_type)
+            .header("X-ASI-Delivery-Id", delivery_id.to_string())
+            .header("X-ASI-Timestamp", timestamp);
+
+        for (k, v) in &self.custom_headers {
+            if let (Ok(h_name), Ok(h_val)) = (
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
+                req = req.header(h_name, h_val);
+            }
+        }
 
         if let Some(secret) = self.secret.as_deref().filter(|s| !s.is_empty()) {
             let signed_payload = format!("{timestamp}.{raw_body}");
@@ -204,6 +287,45 @@ impl NotificationSink for WebhookJsonSink {
             )));
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl NotificationSink for WebhookJsonSink {
+    async fn send(&self, message: &NotificationMessage) -> Result<(), DomainError> {
+        let timestamp = message.detected_at.timestamp().to_string();
+        let payload = serde_json::json!({
+            "event": "diff.detected",
+            "delivery_id": message.delivery_id,
+            "diff_event_id": message.diff_event_id,
+            "asset_group_name": message.asset_group_name,
+            "host_id": message.host_id,
+            "ip_addr": message.ip_addr,
+            "event_kind": message.event_kind,
+            "severity": message.severity,
+            "bullet_items": message.bullet_items,
+            "detected_at": message.detected_at,
+        });
+        self.send_signed_webhook("diff.detected", message.delivery_id, &timestamp, payload)
+            .await
+    }
+
+    async fn send_custom_event(
+        &self,
+        event_type: &str,
+        delivery_id: Uuid,
+        payload: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        let now = Utc::now();
+        let timestamp = now.timestamp().to_string();
+        let envelope = serde_json::json!({
+            "event": event_type,
+            "delivery_id": delivery_id,
+            "occurred_at": now,
+            "data": payload,
+        });
+        self.send_signed_webhook(event_type, delivery_id, &timestamp, envelope)
+            .await
     }
 }
 
@@ -230,6 +352,18 @@ impl NotificationSink for SlackSink {
             ]
         });
         post_json_webhook(&self.http, &self.url, &payload).await
+    }
+
+    async fn send_custom_event(
+        &self,
+        event_type: &str,
+        _delivery_id: Uuid,
+        payload: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        let (title, lines) = summarize_custom_payload(event_type, payload);
+        let body_text = format!("*{title}*\n```{}```", lines.join("\n"));
+        let body = serde_json::json!({ "text": body_text });
+        post_json_webhook(&self.http, &self.url, &body).await
     }
 }
 
@@ -258,6 +392,24 @@ impl NotificationSink for TeamsSink {
         });
         post_json_webhook(&self.http, &self.url, &payload).await
     }
+
+    async fn send_custom_event(
+        &self,
+        event_type: &str,
+        _delivery_id: Uuid,
+        payload: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        let (title, lines) = summarize_custom_payload(event_type, payload);
+        let body = serde_json::json!({
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "1570EF",
+            "summary": title,
+            "title": title,
+            "text": lines.join("<br/>"),
+        });
+        post_json_webhook(&self.http, &self.url, &body).await
+    }
 }
 
 pub struct MattermostSink {
@@ -275,6 +427,21 @@ impl NotificationSink for MattermostSink {
             "text": markdown,
         });
         post_json_webhook(&self.http, &self.url, &payload).await
+    }
+
+    async fn send_custom_event(
+        &self,
+        event_type: &str,
+        _delivery_id: Uuid,
+        payload: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        let (title, lines) = summarize_custom_payload(event_type, payload);
+        let markdown = format!("#### {title}\n```json\n{}\n```", lines.join("\n"));
+        let body = serde_json::json!({
+            "username": "ASI",
+            "text": markdown,
+        });
+        post_json_webhook(&self.http, &self.url, &body).await
     }
 }
 
@@ -314,10 +481,8 @@ async fn read_smtp_reply(
     }
 }
 
-#[async_trait]
-impl NotificationSink for SmtpSink {
-    async fn send(&self, message: &NotificationMessage) -> Result<(), DomainError> {
-        let (subject, lines) = render_notification_summary(message);
+impl SmtpSink {
+    async fn send_smtp_mail(&self, subject: &str, lines: Vec<String>) -> Result<(), DomainError> {
         let mut stream = tokio::time::timeout(
             REQUEST_TIMEOUT,
             TcpStream::connect((self.host.as_str(), self.port)),
@@ -397,6 +562,24 @@ impl NotificationSink for SmtpSink {
     }
 }
 
+#[async_trait]
+impl NotificationSink for SmtpSink {
+    async fn send(&self, message: &NotificationMessage) -> Result<(), DomainError> {
+        let (subject, lines) = render_notification_summary(message);
+        self.send_smtp_mail(&subject, lines).await
+    }
+
+    async fn send_custom_event(
+        &self,
+        event_type: &str,
+        _delivery_id: Uuid,
+        payload: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        let (subject, lines) = summarize_custom_payload(event_type, payload);
+        self.send_smtp_mail(&subject, lines).await
+    }
+}
+
 fn require_http_url(config: &serde_json::Value) -> Result<String, DomainError> {
     let url = config
         .get("url")
@@ -446,6 +629,8 @@ pub fn build_sink(
             Ok(Box::new(WebhookJsonSink {
                 url,
                 secret: decrypted_secret.map(ToString::to_string),
+                custom_headers: parse_custom_headers(config_public),
+                custom_payload_data: parse_custom_payload_data(config_public),
                 http: build_http_client()?,
             }))
         }
@@ -543,5 +728,32 @@ mod tests {
             None
         )
         .is_err());
+    }
+
+    #[test]
+    fn parses_custom_headers_and_merges_custom_payload_data() {
+        let cfg = serde_json::json!({
+            "url": "https://hooks.agh.local/asi",
+            "custom_headers": {
+                "X-ASI-Environment": "prod-agh",
+                "X-ASI-Signature-256": "must-be-ignored"
+            },
+            "custom_payload_data": {
+                "team": "CBI-AGH",
+                "priority_tag": "soc-tier1"
+            }
+        });
+        let headers = parse_custom_headers(&cfg);
+        assert_eq!(
+            headers.get("X-ASI-Environment").map(String::as_str),
+            Some("prod-agh")
+        );
+        assert!(!headers.contains_key("X-ASI-Signature-256"));
+
+        let custom = parse_custom_payload_data(&cfg);
+        let mut base = serde_json::json!({ "event": "scan.completed", "delivery_id": "123" });
+        merge_custom_payload(&mut base, custom.as_ref());
+        assert_eq!(base["team"], "CBI-AGH");
+        assert_eq!(base["custom_data"]["priority_tag"], "soc-tier1");
     }
 }

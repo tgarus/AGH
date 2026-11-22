@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BellRing, Plus, RefreshCw, Send, Trash2 } from 'lucide-react';
+import { BellRing, Plus, RefreshCw, Send, Trash2, Zap } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -14,6 +14,17 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/context/AuthContext';
 
+const WEBHOOK_EVENTS = [
+  'diff.confirmed_change',
+  'diff.active_variance',
+  'scan.started',
+  'scan.completed',
+  'host.new_discovered',
+  'host.admin_panel_detected',
+  'host.anomaly_detected',
+  'defectdojo.finding_pushed',
+] as const;
+
 export function NotificationsView() {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -22,13 +33,25 @@ export function NotificationsView() {
   const [name, setName] = useState('');
   const [channelType, setChannelType] = useState<NotificationChannelType>('webhook_json');
   const [webhookUrl, setWebhookUrl] = useState('https://soc.agh.local/webhooks/asi');
+  const [customHeadersText, setCustomHeadersText] = useState('{}');
+  const [customPayloadText, setCustomPayloadText] = useState('{}');
   const [smtpHost, setSmtpHost] = useState('smtp.agh.local');
   const [smtpPort, setSmtpPort] = useState(587);
   const [smtpFrom, setSmtpFrom] = useState('asi@agh.local');
   const [smtpTo, setSmtpTo] = useState('soc@agh.local');
   const [secret, setSecret] = useState('');
-  const [notifyConfirmed, setNotifyConfirmed] = useState(true);
-  const [notifyVariance, setNotifyVariance] = useState(true);
+  const [subscribedEvents, setSubscribedEvents] = useState<string[]>([
+    'diff.confirmed_change',
+    'diff.active_variance',
+    'scan.completed',
+    'host.admin_panel_detected',
+    'host.anomaly_detected',
+  ]);
+  const [triggerChannel, setTriggerChannel] = useState<NotificationChannelDto | null>(null);
+  const [triggerEventType, setTriggerEventType] = useState('custom.manual_alert');
+  const [triggerPayloadText, setTriggerPayloadText] = useState(
+    '{\n  "severity": "high",\n  "message": "Manual incident escalation from ASI"\n}',
+  );
   const [testFeedback, setTestFeedback] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -58,18 +81,54 @@ export function NotificationsView() {
     },
   });
 
+  const parseJsonObjectField = (raw: string, fieldLabel: string): Record<string, unknown> | undefined => {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === '{}') {
+      return undefined;
+    }
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(trimmed);
+    } catch {
+      throw new Error(t('notifications.invalidJsonObject', { field: fieldLabel }));
+    }
+    if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+      throw new Error(t('notifications.invalidJsonObject', { field: fieldLabel }));
+    }
+    return decoded as Record<string, unknown>;
+  };
+
+  const toggleEventSubscription = (evt: string) => {
+    setSubscribedEvents((prev) =>
+      prev.includes(evt) ? prev.filter((item) => item !== evt) : [...prev, evt],
+    );
+  };
+
   const createMutation = useMutation({
     mutationFn: async () => {
-      const configPublic =
-        channelType === 'smtp'
-          ? { host: smtpHost, port: smtpPort, from: smtpFrom, to: smtpTo }
-          : { url: webhookUrl };
+      let configPublic: Record<string, unknown>;
+      if (channelType === 'smtp') {
+        configPublic = { host: smtpHost, port: smtpPort, from: smtpFrom, to: smtpTo };
+      } else {
+        configPublic = { url: webhookUrl };
+        if (channelType === 'webhook_json') {
+          const customHeaders = parseJsonObjectField(customHeadersText, 'custom_headers');
+          const customPayload = parseJsonObjectField(customPayloadText, 'custom_payload_data');
+          if (customHeaders) {
+            configPublic.custom_headers = customHeaders;
+          }
+          if (customPayload) {
+            configPublic.custom_payload_data = customPayload;
+          }
+        }
+      }
       const { data, error } = await apiClient.POST('/api/v1/notifications/channels', {
         body: {
           name,
           channel_type: channelType,
-          notify_on_confirmed: notifyConfirmed,
-          notify_on_variance: notifyVariance,
+          notify_on_confirmed: subscribedEvents.includes('diff.confirmed_change'),
+          notify_on_variance: subscribedEvents.includes('diff.active_variance'),
+          subscribed_events: subscribedEvents,
           config_public: configPublic,
           secret: secret.trim() || null,
           is_enabled: true,
@@ -86,6 +145,41 @@ export function NotificationsView() {
       setSecret('');
       void queryClient.invalidateQueries({ queryKey: ['notification-channels'] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
+    },
+    onError: (err) => setErrorMsg(err.message),
+  });
+
+  const triggerCustomMutation = useMutation({
+    mutationFn: async () => {
+      if (!triggerChannel) {
+        throw new Error('No channel selected');
+      }
+      let parsedPayload: unknown;
+      try {
+        parsedPayload = JSON.parse(triggerPayloadText);
+      } catch {
+        throw new Error(t('io.invalidJson'));
+      }
+      const { data, error } = await apiClient.POST(
+        '/api/v1/notifications/channels/{id}/trigger',
+        {
+          params: { path: { id: triggerChannel.id } },
+          body: {
+            event_type: triggerEventType.trim() || 'custom.manual',
+            payload: parsedPayload,
+          },
+        },
+      );
+      if (error || !data) {
+        throw new Error(formatApiError(error, 'Failed to trigger custom webhook.'));
+      }
+      return data;
+    },
+    onSuccess: (res) => {
+      setErrorMsg(null);
+      setTestFeedback(`${res.delivered ? 'OK' : 'FAILED'}: ${res.detail}`);
+      setTriggerChannel(null);
+      void queryClient.invalidateQueries({ queryKey: ['notification-deliveries'] });
     },
     onError: (err) => setErrorMsg(err.message),
   });
@@ -242,41 +336,108 @@ export function NotificationsView() {
                   />
                 </div>
               ) : (
-                <input
-                  type="url"
-                  required
-                  value={webhookUrl}
-                  onChange={(e) => setWebhookUrl(e.target.value)}
-                  placeholder="https://..."
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                />
+                <div className="space-y-2">
+                  <input
+                    type="url"
+                    required
+                    value={webhookUrl}
+                    onChange={(e) => setWebhookUrl(e.target.value)}
+                    placeholder="https://..."
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  />
+                  {channelType === 'webhook_json' ? (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-xs text-muted-foreground">
+                          {t('notifications.customHeadersLabel')}
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={customHeadersText}
+                          onChange={(e) => setCustomHeadersText(e.target.value)}
+                          placeholder='{"X-Team": "SOC"}'
+                          className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs text-muted-foreground">
+                          {t('notifications.customPayloadLabel')}
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={customPayloadText}
+                          onChange={(e) => setCustomPayloadText(e.target.value)}
+                          placeholder='{"env": "prod"}'
+                          className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               )}
 
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex gap-4 text-xs">
-                  <label className="flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      checked={notifyConfirmed}
-                      onChange={(e) => setNotifyConfirmed(e.target.checked)}
-                    />
-                    <span>confirmed_change</span>
-                  </label>
-                  <label className="flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      checked={notifyVariance}
-                      onChange={(e) => setNotifyVariance(e.target.checked)}
-                    />
-                    <span>active_variance</span>
-                  </label>
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-muted-foreground">
+                  {t('notifications.subscribedEventsLabel')}
                 </div>
-                <Button type="submit" size="sm" disabled={createMutation.isPending}>
-                  <Plus className="h-4 w-4" />
-                  {t('notifications.addChannel')}
-                </Button>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap gap-3 text-xs">
+                    {WEBHOOK_EVENTS.map((evt) => (
+                      <label key={evt} className="flex items-center gap-1.5 font-mono">
+                        <input
+                          type="checkbox"
+                          checked={subscribedEvents.includes(evt)}
+                          onChange={() => toggleEventSubscription(evt)}
+                        />
+                        <span>{evt}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <Button type="submit" size="sm" disabled={createMutation.isPending}>
+                    <Plus className="h-4 w-4" />
+                    {t('notifications.addChannel')}
+                  </Button>
+                </div>
               </div>
             </form>
+          ) : null}
+
+          {triggerChannel ? (
+            <div className="space-y-3 rounded-md border border-primary/50 bg-background/70 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm font-semibold">
+                  {t('notifications.triggerTitle', { name: triggerChannel.name })}
+                </div>
+                <Button variant="ghost" size="sm" onClick={() => setTriggerChannel(null)}>
+                  {t('integrations.modal.close')}
+                </Button>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3">
+                <input
+                  type="text"
+                  value={triggerEventType}
+                  onChange={(e) => setTriggerEventType(e.target.value)}
+                  placeholder="custom.manual_alert"
+                  className="rounded-md border border-border bg-background px-3 py-2 font-mono text-xs"
+                />
+                <textarea
+                  rows={3}
+                  value={triggerPayloadText}
+                  onChange={(e) => setTriggerPayloadText(e.target.value)}
+                  className="rounded-md border border-border bg-background p-2 font-mono text-xs sm:col-span-2"
+                />
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  onClick={() => triggerCustomMutation.mutate()}
+                  disabled={triggerCustomMutation.isPending}
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  {t('notifications.sendCustomBtn')}
+                </Button>
+              </div>
+            </div>
           ) : null}
 
           <div className="overflow-x-auto rounded-md border border-border">
@@ -299,9 +460,20 @@ export function NotificationsView() {
                           {ch.channel_type} {ch.has_secret ? '· AES-256 secret' : ''}
                         </div>
                       </td>
-                      <td className="px-3 py-2 space-x-1">
-                        {ch.notify_on_confirmed ? <Badge variant="default">confirmed</Badge> : null}
-                        {ch.notify_on_variance ? <Badge variant="warning">variance</Badge> : null}
+                      <td className="px-3 py-2">
+                        <div className="flex flex-wrap gap-1">
+                          {(ch.subscribed_events?.length
+                            ? ch.subscribed_events
+                            : [
+                                ...(ch.notify_on_confirmed ? ['diff.confirmed_change'] : []),
+                                ...(ch.notify_on_variance ? ['diff.active_variance'] : []),
+                              ]
+                          ).map((evt) => (
+                            <Badge key={evt} variant="outline" className="font-mono text-[10px]">
+                              {evt}
+                            </Badge>
+                          ))}
+                        </div>
                       </td>
                       <td className="px-3 py-2">
                         <Badge variant={ch.is_enabled ? 'success' : 'outline'}>
@@ -311,6 +483,15 @@ export function NotificationsView() {
                       <td className="px-3 py-2 text-right">
                         {canManage ? (
                           <div className="inline-flex gap-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setTriggerChannel(ch)}
+                              title={t('notifications.triggerBtn')}
+                            >
+                              <Zap className="h-3.5 w-3.5" />
+                              {t('notifications.triggerBtn')}
+                            </Button>
                             <Button
                               size="sm"
                               variant="outline"
@@ -362,9 +543,10 @@ export function NotificationsView() {
               <thead className="border-b border-border bg-secondary/40 uppercase text-muted-foreground">
                 <tr>
                   <th className="px-3 py-2">{t('notifications.colChannel')}</th>
+                  <th className="px-3 py-2">{t('notifications.colEvent')}</th>
                   <th className="px-3 py-2">{t('admin.status')}</th>
                   <th className="px-3 py-2">{t('notifications.colAttempts')}</th>
-                  <th className="px-3 py-2">{t('notifications.colError')}</th>
+                  <th className="px-3 py-2">{t('notifications.colPayloadOrError')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -372,6 +554,7 @@ export function NotificationsView() {
                   deliveriesQuery.data.items.map((d) => (
                     <tr key={d.id} className="border-b border-border/60 last:border-0">
                       <td className="px-3 py-2 font-medium">{d.channel_name}</td>
+                      <td className="px-3 py-2 font-mono text-[11px]">{d.event_type}</td>
                       <td className="px-3 py-2">
                         <Badge
                           variant={
@@ -386,12 +569,22 @@ export function NotificationsView() {
                         </Badge>
                       </td>
                       <td className="px-3 py-2 font-mono">{d.attempt_count}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{d.last_error ?? '—'}</td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {d.last_error ? (
+                          <span className="text-red-300">{d.last_error}</span>
+                        ) : d.custom_payload ? (
+                          <code className="block max-w-md truncate font-mono text-[11px]">
+                            {JSON.stringify(d.custom_payload)}
+                          </code>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={4} className="px-3 py-4 text-center text-muted-foreground">
+                    <td colSpan={5} className="px-3 py-4 text-center text-muted-foreground">
                       {t('notifications.emptyDeliveries')}
                     </td>
                   </tr>

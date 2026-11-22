@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::rbac::Role;
 use crate::worker::DiscoveryTool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -115,6 +116,21 @@ pub struct UpdateScanPolicyRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AssetGroupMemberDto {
+    pub user_id: Uuid,
+    pub username: String,
+    pub email: String,
+    pub role: Role,
+    pub assigned_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetAssetGroupMembersRequest {
+    #[serde(default)]
+    pub user_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AssetGroupDto {
     pub id: Uuid,
     pub name: String,
@@ -124,6 +140,8 @@ pub struct AssetGroupDto {
     pub sampling_enabled: bool,
     pub external_refs: serde_json::Value,
     pub target_count: i64,
+    #[serde(default)]
+    pub assigned_user_ids: Vec<Uuid>,
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -144,6 +162,8 @@ pub struct AssetGroupDetailDto {
     pub group: AssetGroupDto,
     pub policy: ScanPolicyDto,
     pub targets: Vec<AssetGroupTargetDto>,
+    #[serde(default)]
+    pub members: Vec<AssetGroupMemberDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -217,6 +237,10 @@ impl WorkerNodeStatus {
     }
 }
 
+fn default_worker_visibility_scope() -> String {
+    "all".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkerNodeDto {
     pub id: Uuid,
@@ -225,6 +249,14 @@ pub struct WorkerNodeDto {
     pub status: WorkerNodeStatus,
     pub capabilities: serde_json::Value,
     pub max_concurrency: i32,
+    #[serde(default = "default_worker_visibility_scope")]
+    pub visibility_scope: String,
+    #[serde(default)]
+    pub allowed_asset_group_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub allowed_user_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub created_by: Option<Uuid>,
     pub last_heartbeat_at: Option<DateTime<Utc>>,
     pub registered_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
@@ -235,6 +267,12 @@ pub struct CreateWorkerTokenRequest {
     pub name: String,
     pub segment_tag: Option<String>,
     pub max_concurrency: Option<i32>,
+    #[serde(default)]
+    pub visibility_scope: Option<String>,
+    #[serde(default)]
+    pub allowed_asset_group_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub allowed_user_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

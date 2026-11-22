@@ -2,7 +2,7 @@ use std::net::IpAddr;
 
 use ipnetwork::IpNetwork;
 
-use crate::assets::{IgnoredTargetType, TargetType};
+use crate::assets::{IgnoredTargetType, TargetInput, TargetType};
 use crate::error::FieldViolation;
 
 pub fn validate_target_value(
@@ -47,6 +47,149 @@ pub fn validate_ignored_target_value(
         IgnoredTargetType::Domain => TargetType::Domain,
     };
     validate_target_value(field_name, mapped, raw)
+}
+
+pub fn auto_detect_target_type(
+    field_name: &str,
+    raw: &str,
+) -> Result<(TargetType, String), FieldViolation> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(FieldViolation {
+            field: field_name.to_string(),
+            code: "REQUIRED".to_string(),
+            message: "Target value cannot be empty.".to_string(),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix('!') {
+        let norm = validate_target_value(field_name, TargetType::ExcludeCidr, rest.trim())?;
+        return Ok((TargetType::ExcludeCidr, norm));
+    }
+    if trimmed.contains('/') {
+        let norm = validate_target_value(field_name, TargetType::Cidr, trimmed)?;
+        return Ok((TargetType::Cidr, norm));
+    }
+    if trimmed.parse::<IpAddr>().is_ok() {
+        let norm = validate_target_value(field_name, TargetType::Ip, trimmed)?;
+        return Ok((TargetType::Ip, norm));
+    }
+    let norm = validate_target_value(field_name, TargetType::Domain, trimmed)?;
+    Ok((TargetType::Domain, norm))
+}
+
+pub fn parse_raw_targets_blob(raw: &str) -> Result<Vec<TargetInput>, Vec<FieldViolation>> {
+    let mut items = Vec::new();
+    let mut violations = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (line_idx, raw_line) in raw.lines().enumerate() {
+        let trimmed_line = raw_line.trim();
+        if trimmed_line.is_empty()
+            || trimmed_line.starts_with('#')
+            || trimmed_line.starts_with("//")
+        {
+            continue;
+        }
+
+        let (body_part, inline_comment) = match trimmed_line.split_once('#') {
+            Some((left, right)) => (left.trim(), Some(right.trim())),
+            None => (trimmed_line, None),
+        };
+        if body_part.is_empty() {
+            continue;
+        }
+        let comment_note = inline_comment.filter(|c| !c.is_empty()).map(str::to_string);
+
+        for segment in body_part.split(';') {
+            let seg = segment.trim();
+            if seg.is_empty() {
+                continue;
+            }
+            let comma_parts: Vec<&str> = seg
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if comma_parts.is_empty() {
+                continue;
+            }
+
+            // Detect `value, note` pattern vs `target1, target2, ...`
+            if comma_parts.len() == 2 {
+                let first_res = auto_detect_target_type(
+                    &format!("targets[line_{}]", line_idx + 1),
+                    comma_parts[0],
+                );
+                let second_res = auto_detect_target_type(
+                    &format!("targets[line_{}]", line_idx + 1),
+                    comma_parts[1],
+                );
+                if let (Ok((tt, val)), Err(_)) = (&first_res, &second_res) {
+                    let note = if comma_parts[1].is_empty() {
+                        comment_note.clone()
+                    } else {
+                        Some(comma_parts[1].to_string())
+                    };
+                    if seen.insert((tt.as_db_str(), val.clone())) {
+                        items.push(TargetInput {
+                            target_type: *tt,
+                            value: val.clone(),
+                            notes: note,
+                        });
+                    }
+                    continue;
+                }
+            }
+
+            for token in comma_parts {
+                // Also allow whitespace-separated targets if all whitespace tokens are valid targets
+                let ws_tokens: Vec<&str> = token.split_whitespace().collect();
+                if ws_tokens.len() > 1
+                    && ws_tokens
+                        .iter()
+                        .all(|t| auto_detect_target_type("target", t).is_ok())
+                {
+                    for sub in ws_tokens {
+                        if let Ok((tt, val)) = auto_detect_target_type("target", sub) {
+                            if seen.insert((tt.as_db_str(), val.clone())) {
+                                items.push(TargetInput {
+                                    target_type: tt,
+                                    value: val,
+                                    notes: comment_note.clone(),
+                                });
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                match auto_detect_target_type(&format!("targets[line_{}]", line_idx + 1), token) {
+                    Ok((tt, val)) => {
+                        if seen.insert((tt.as_db_str(), val.clone())) {
+                            items.push(TargetInput {
+                                target_type: tt,
+                                value: val,
+                                notes: comment_note.clone(),
+                            });
+                        }
+                    }
+                    Err(v) => violations.push(v),
+                }
+            }
+        }
+    }
+
+    if !violations.is_empty() {
+        return Err(violations);
+    }
+    if items.is_empty() {
+        return Err(vec![FieldViolation {
+            field: "targets".to_string(),
+            code: "REQUIRED".to_string(),
+            message: "No valid IP, CIDR, or domain targets found.".to_string(),
+        }]);
+    }
+    Ok(items)
 }
 
 pub fn validate_domain(raw: &str) -> Result<String, String> {
@@ -354,5 +497,41 @@ mod tests {
         assert!(validate_email("bad-email").is_err());
         assert!(validate_password_strength("ChangeMeNow_Admin123!").is_ok());
         assert!(validate_password_strength("weakpass").is_err());
+    }
+
+    #[test]
+    fn auto_detects_and_parses_raw_targets_blob() {
+        assert_eq!(
+            auto_detect_target_type("t", "172.28.0.10").unwrap(),
+            (TargetType::Ip, "172.28.0.10".to_string())
+        );
+        assert_eq!(
+            auto_detect_target_type("t", "172.28.0.5/24").unwrap(),
+            (TargetType::Cidr, "172.28.0.0/24".to_string())
+        );
+        assert_eq!(
+            auto_detect_target_type("t", "Portal.AGH.edu.pl").unwrap(),
+            (TargetType::Domain, "portal.agh.edu.pl".to_string())
+        );
+        assert_eq!(
+            auto_detect_target_type("t", "!172.28.0.99/32").unwrap(),
+            (TargetType::ExcludeCidr, "172.28.0.99/32".to_string())
+        );
+
+        let blob = "
+            # Comment line
+            172.28.0.10 # Main portal
+            172.28.0.0/24, Lab subnet
+            app1.lab.local; app2.lab.local
+            !172.28.0.99/32
+            10.0.0.1, 10.0.0.2
+        ";
+        let parsed = parse_raw_targets_blob(blob).unwrap();
+        assert_eq!(parsed.len(), 7);
+        assert_eq!(parsed[0].target_type, TargetType::Ip);
+        assert_eq!(parsed[0].notes.as_deref(), Some("Main portal"));
+        assert_eq!(parsed[1].target_type, TargetType::Cidr);
+        assert_eq!(parsed[1].notes.as_deref(), Some("Lab subnet"));
+        assert_eq!(parsed[4].target_type, TargetType::ExcludeCidr);
     }
 }

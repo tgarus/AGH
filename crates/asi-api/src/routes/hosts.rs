@@ -211,9 +211,30 @@ pub async fn list_hosts(
               $5::text IS NULL
               OR h.ip_addr::text ILIKE $5
               OR ag.name ILIKE $5
+              OR COALESCE(h.notes, '') ILIKE $5
+              OR COALESCE(h.owner_hint, '') ILIKE $5
+              OR EXISTS (
+                  SELECT 1 FROM unnest(h.auto_tags || h.manual_tags) AS tag
+                  WHERE tag ILIKE $5
+              )
               OR EXISTS (
                   SELECT 1 FROM host_hostnames hh
                   WHERE hh.host_id = h.id AND hh.hostname ILIKE $5
+              )
+              OR EXISTS (
+                  SELECT 1 FROM host_ports hp
+                  LEFT JOIN web_observations wo ON wo.host_port_id = hp.id
+                  WHERE hp.host_id = h.id
+                    AND hp.state <> 'closed'
+                    AND (
+                        hp.port::text ILIKE $5
+                        OR COALESCE(hp.service_name, '') ILIKE $5
+                        OR COALESCE(hp.product, '') ILIKE $5
+                        OR COALESCE(hp.version, '') ILIKE $5
+                        OR COALESCE(wo.vhost, '') ILIKE $5
+                        OR COALESCE(wo.title, '') ILIKE $5
+                        OR wo.matched_technologies::text ILIKE $5
+                    )
               )
           )
         "#,
@@ -245,9 +266,30 @@ pub async fn list_hosts(
               $5::text IS NULL
               OR h.ip_addr::text ILIKE $5
               OR ag.name ILIKE $5
+              OR COALESCE(h.notes, '') ILIKE $5
+              OR COALESCE(h.owner_hint, '') ILIKE $5
+              OR EXISTS (
+                  SELECT 1 FROM unnest(h.auto_tags || h.manual_tags) AS tag
+                  WHERE tag ILIKE $5
+              )
               OR EXISTS (
                   SELECT 1 FROM host_hostnames hh
                   WHERE hh.host_id = h.id AND hh.hostname ILIKE $5
+              )
+              OR EXISTS (
+                  SELECT 1 FROM host_ports hp
+                  LEFT JOIN web_observations wo ON wo.host_port_id = hp.id
+                  WHERE hp.host_id = h.id
+                    AND hp.state <> 'closed'
+                    AND (
+                        hp.port::text ILIKE $5
+                        OR COALESCE(hp.service_name, '') ILIKE $5
+                        OR COALESCE(hp.product, '') ILIKE $5
+                        OR COALESCE(hp.version, '') ILIKE $5
+                        OR COALESCE(wo.vhost, '') ILIKE $5
+                        OR COALESCE(wo.title, '') ILIKE $5
+                        OR wo.matched_technologies::text ILIKE $5
+                    )
               )
           )
         ORDER BY h.last_scanned_at DESC NULLS LAST, h.ip_addr ASC
@@ -505,12 +547,256 @@ pub async fn get_host(
         })
         .collect();
 
+    let comment_rows: Vec<HostCommentRow> = sqlx::query_as(
+        r#"
+        SELECT id, host_id, host_port_id, port, protocol, author_id, author_name, content, created_at
+        FROM host_comments
+        WHERE host_id = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| map_db_err(err, "host comments lookup failed", auth.request_id, &instance))?;
+
+    let comments = comment_rows.into_iter().map(HostCommentDto::from).collect();
+
     Ok(Json(HostDetailDto {
         host,
         hostnames,
         ports,
         availability_samples,
+        comments,
     }))
+}
+
+#[derive(FromRow)]
+struct HostCommentRow {
+    id: Uuid,
+    host_id: Uuid,
+    host_port_id: Option<Uuid>,
+    port: Option<i32>,
+    protocol: Option<String>,
+    author_id: Option<Uuid>,
+    author_name: String,
+    content: String,
+    created_at: DateTime<Utc>,
+}
+
+impl From<HostCommentRow> for asi_common::inventory::HostCommentDto {
+    fn from(r: HostCommentRow) -> Self {
+        Self {
+            id: r.id,
+            host_id: r.host_id,
+            host_port_id: r.host_port_id,
+            port: r.port,
+            protocol: r.protocol,
+            author_id: r.author_id,
+            author_name: r.author_name,
+            content: r.content,
+            created_at: r.created_at,
+        }
+    }
+}
+
+use asi_common::inventory::{CreateHostCommentRequest, HostCommentDto};
+use axum::http::StatusCode;
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/hosts/{id}/comments",
+    tag = "Hosts",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Host UUID")),
+    responses(
+        (status = 200, description = "List host and port comments", body = Vec<HostCommentDto>)
+    )
+)]
+pub async fn list_host_comments(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<HostCommentDto>>, AppError> {
+    let instance = format!("/api/v1/hosts/{id}/comments");
+    auth.require(Permission::ViewInventoryAndDiffs, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+
+    let rows: Vec<HostCommentRow> = sqlx::query_as(
+        r#"
+        SELECT id, host_id, host_port_id, port, protocol, author_id, author_name, content, created_at
+        FROM host_comments
+        WHERE host_id = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| map_db_err(err, "host comments query failed", auth.request_id, &instance))?;
+
+    Ok(Json(rows.into_iter().map(HostCommentDto::from).collect()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/hosts/{id}/comments",
+    tag = "Hosts",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Host UUID")),
+    request_body = CreateHostCommentRequest,
+    responses(
+        (status = 201, description = "Comment added to host or service", body = HostCommentDto),
+        (status = 400, description = "Validation error", body = ProblemDetails),
+        (status = 404, description = "Host or port not found", body = ProblemDetails)
+    )
+)]
+pub async fn create_host_comment(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<CreateHostCommentRequest>,
+) -> Result<(StatusCode, Json<HostCommentDto>), AppError> {
+    let instance = format!("/api/v1/hosts/{id}/comments");
+    auth.require(Permission::EditAnalyticalMetadata, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+    let source_ip = extract_source_ip(&headers);
+
+    let content = payload.content.trim().to_string();
+    if content.is_empty() {
+        return Err(AppError::new(
+            DomainError::Validation {
+                detail: "Comment content cannot be empty.".to_string(),
+                violations: vec![asi_common::error::FieldViolation {
+                    field: "content".to_string(),
+                    code: "REQUIRED".to_string(),
+                    message: "Content is required.".to_string(),
+                }],
+            },
+            auth.request_id,
+            Some(instance),
+        ));
+    }
+
+    let host_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM hosts WHERE id = $1)")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|err| map_db_err(err, "host lookup failed", auth.request_id, &instance))?;
+
+    if !host_exists {
+        return Err(AppError::new(
+            DomainError::NotFound(format!("Host {id} not found.")),
+            auth.request_id,
+            Some(instance),
+        ));
+    }
+
+    let (port_num, protocol): (Option<i32>, Option<String>) = if let Some(hp_id) =
+        payload.host_port_id
+    {
+        let row: Option<(i32, String)> =
+            sqlx::query_as("SELECT port, protocol FROM host_ports WHERE id = $1 AND host_id = $2")
+                .bind(hp_id)
+                .bind(id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|err| map_db_err(err, "port lookup failed", auth.request_id, &instance))?;
+        let Some((p, proto)) = row else {
+            return Err(AppError::new(
+                DomainError::NotFound(format!("Host port {hp_id} not found for host {id}.")),
+                auth.request_id,
+                Some(instance),
+            ));
+        };
+        (Some(p), Some(proto))
+    } else {
+        (None, None)
+    };
+
+    let row: HostCommentRow = sqlx::query_as(
+        r#"
+        INSERT INTO host_comments (host_id, host_port_id, port, protocol, author_id, author_name, content)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, host_id, host_port_id, port, protocol, author_id, author_name, content, created_at
+        "#,
+    )
+    .bind(id)
+    .bind(payload.host_port_id)
+    .bind(port_num)
+    .bind(&protocol)
+    .bind(auth.user.id)
+    .bind(&auth.user.username)
+    .bind(&content)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| map_db_err(err, "insert host comment failed", auth.request_id, &instance))?;
+
+    let dto = HostCommentDto::from(row);
+    let _ = insert_audit_log(
+        pool,
+        AuditRecord {
+            actor_type: "user",
+            actor_id: Some(auth.user.id),
+            action: "host.comment_added",
+            resource_type: "host",
+            resource_id: Some(id),
+            before_state: None,
+            after_state: Some(serde_json::json!({
+                "comment_id": dto.id,
+                "host_port_id": dto.host_port_id,
+                "port": dto.port,
+                "protocol": dto.protocol,
+            })),
+            source_ip,
+            request_id: auth.request_id,
+        },
+    )
+    .await;
+
+    Ok((StatusCode::CREATED, Json(dto)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/hosts/{id}/comments/{comment_id}",
+    tag = "Hosts",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = Uuid, Path, description = "Host UUID"),
+        ("comment_id" = Uuid, Path, description = "Comment UUID")
+    ),
+    responses(
+        (status = 204, description = "Comment deleted"),
+        (status = 404, description = "Comment not found", body = ProblemDetails)
+    )
+)]
+pub async fn delete_host_comment(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path((id, comment_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, AppError> {
+    let instance = format!("/api/v1/hosts/{id}/comments/{comment_id}");
+    auth.require(Permission::EditAnalyticalMetadata, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+
+    let res = sqlx::query("DELETE FROM host_comments WHERE id = $1 AND host_id = $2")
+        .bind(comment_id)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|err| map_db_err(err, "delete comment failed", auth.request_id, &instance))?;
+
+    if res.rows_affected() == 0 {
+        return Err(AppError::new(
+            DomainError::NotFound(format!("Comment {comment_id} not found on host {id}.")),
+            auth.request_id,
+            Some(instance),
+        ));
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(

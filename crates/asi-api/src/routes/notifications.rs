@@ -5,7 +5,7 @@ use asi_common::error::{DomainError, ProblemDetails};
 use asi_common::notification::{
     CreateNotificationChannelRequest, NotificationChannelDto, NotificationChannelType,
     NotificationDeliveryDto, NotificationMessage, TestNotificationResponse,
-    UpdateNotificationChannelRequest,
+    TriggerCustomWebhookRequest, UpdateNotificationChannelRequest, WEBHOOK_EVENT_TYPES,
 };
 use asi_common::pagination::{PaginatedResponse, PaginationMeta, PaginationQuery};
 use asi_common::rbac::Permission;
@@ -31,6 +31,7 @@ struct ChannelRow {
     asset_group_id: Option<Uuid>,
     notify_on_confirmed: bool,
     notify_on_variance: bool,
+    subscribed_events: Vec<String>,
     config_public: serde_json::Value,
     has_secret: bool,
     is_enabled: bool,
@@ -59,6 +60,7 @@ impl ChannelRow {
             asset_group_id: self.asset_group_id,
             notify_on_confirmed: self.notify_on_confirmed,
             notify_on_variance: self.notify_on_variance,
+            subscribed_events: self.subscribed_events,
             config_public: self.config_public,
             has_secret: self.has_secret,
             is_enabled: self.is_enabled,
@@ -82,13 +84,56 @@ struct DeliveryRow {
     id: Uuid,
     channel_id: Uuid,
     channel_name: String,
-    diff_event_id: Uuid,
+    diff_event_id: Option<Uuid>,
+    event_type: String,
+    custom_payload: Option<serde_json::Value>,
     status: String,
     attempt_count: i32,
     next_retry_at: Option<DateTime<Utc>>,
     last_error: Option<String>,
     sent_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
+}
+
+fn sanitize_subscribed_events(
+    requested: Option<Vec<String>>,
+    notify_confirmed: bool,
+    notify_variance: bool,
+    request_id: Option<Uuid>,
+    instance: &str,
+) -> Result<Vec<String>, AppError> {
+    match requested {
+        Some(list) => {
+            let mut out = Vec::new();
+            for raw in list {
+                let ev = raw.trim();
+                if ev.is_empty() {
+                    continue;
+                }
+                if !WEBHOOK_EVENT_TYPES.contains(&ev) {
+                    return Err(AppError::new(
+                        DomainError::BadRequest(format!("Unsupported webhook event type '{ev}'.")),
+                        request_id,
+                        Some(instance.to_string()),
+                    ));
+                }
+                if !out.iter().any(|x| x == ev) {
+                    out.push(ev.to_string());
+                }
+            }
+            Ok(out)
+        }
+        None => {
+            let mut out = Vec::new();
+            if notify_confirmed {
+                out.push("diff.confirmed_change".to_string());
+            }
+            if notify_variance {
+                out.push("diff.active_variance".to_string());
+            }
+            Ok(out)
+        }
+    }
 }
 
 #[utoipa::path(
@@ -119,7 +164,7 @@ pub async fn list_notification_channels(
     let rows: Vec<ChannelRow> = sqlx::query_as(
         r#"
         SELECT id, name, channel_type, asset_group_id, notify_on_confirmed, notify_on_variance,
-               config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
+               subscribed_events, config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
                is_enabled, created_at, updated_at
         FROM notification_channels
         ORDER BY name ASC
@@ -205,6 +250,26 @@ pub async fn create_notification_channel(
         None => (None, None),
     };
 
+    let default_confirmed = payload.notify_on_confirmed.unwrap_or(true);
+    let default_variance = payload.notify_on_variance.unwrap_or(true);
+    let subscribed_events = sanitize_subscribed_events(
+        payload.subscribed_events,
+        default_confirmed,
+        default_variance,
+        auth.request_id,
+        instance,
+    )?;
+    let notify_on_confirmed = payload.notify_on_confirmed.unwrap_or_else(|| {
+        subscribed_events
+            .iter()
+            .any(|e| e == "diff.confirmed_change")
+    });
+    let notify_on_variance = payload.notify_on_variance.unwrap_or_else(|| {
+        subscribed_events
+            .iter()
+            .any(|e| e == "diff.active_variance")
+    });
+
     let mut tx = pool
         .begin()
         .await
@@ -214,19 +279,20 @@ pub async fn create_notification_channel(
         r#"
         INSERT INTO notification_channels (
             name, channel_type, asset_group_id, notify_on_confirmed, notify_on_variance,
-            config_public, secret_ciphertext, secret_nonce, is_enabled
+            subscribed_events, config_public, secret_ciphertext, secret_nonce, is_enabled
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id, name, channel_type, asset_group_id, notify_on_confirmed, notify_on_variance,
-                  config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
+                  subscribed_events, config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
                   is_enabled, created_at, updated_at
         "#,
     )
     .bind(&trimmed_name)
     .bind(payload.channel_type.as_db_str())
     .bind(payload.asset_group_id)
-    .bind(payload.notify_on_confirmed.unwrap_or(true))
-    .bind(payload.notify_on_variance.unwrap_or(true))
+    .bind(notify_on_confirmed)
+    .bind(notify_on_variance)
+    .bind(&subscribed_events)
     .bind(&payload.config_public)
     .bind(ct_opt)
     .bind(nonce_opt)
@@ -304,7 +370,7 @@ pub async fn update_notification_channel(
     let current: Option<ChannelRow> = sqlx::query_as(
         r#"
         SELECT id, name, channel_type, asset_group_id, notify_on_confirmed, notify_on_variance,
-               config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
+               subscribed_events, config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
                is_enabled, created_at, updated_at
         FROM notification_channels
         WHERE id = $1
@@ -340,12 +406,22 @@ pub async fn update_notification_channel(
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .unwrap_or(current.name);
+    let next_events = match payload.subscribed_events {
+        Some(list) => sanitize_subscribed_events(
+            Some(list),
+            current.notify_on_confirmed,
+            current.notify_on_variance,
+            auth.request_id,
+            &instance,
+        )?,
+        None => current.subscribed_events,
+    };
     let next_confirmed = payload
         .notify_on_confirmed
-        .unwrap_or(current.notify_on_confirmed);
+        .unwrap_or_else(|| next_events.iter().any(|e| e == "diff.confirmed_change"));
     let next_variance = payload
         .notify_on_variance
-        .unwrap_or(current.notify_on_variance);
+        .unwrap_or_else(|| next_events.iter().any(|e| e == "diff.active_variance"));
     let next_config = payload.config_public.unwrap_or(current.config_public);
     let next_enabled = payload.is_enabled.unwrap_or(current.is_enabled);
 
@@ -374,17 +450,18 @@ pub async fn update_notification_channel(
                 r#"
                 UPDATE notification_channels
                 SET name = $1, notify_on_confirmed = $2, notify_on_variance = $3,
-                    config_public = $4, secret_ciphertext = $5, secret_nonce = $6,
-                    is_enabled = $7, updated_at = NOW()
-                WHERE id = $8
+                    subscribed_events = $4, config_public = $5, secret_ciphertext = $6, secret_nonce = $7,
+                    is_enabled = $8, updated_at = NOW()
+                WHERE id = $9
                 RETURNING id, name, channel_type, asset_group_id, notify_on_confirmed, notify_on_variance,
-                          config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
+                          subscribed_events, config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
                           is_enabled, created_at, updated_at
                 "#,
             )
             .bind(&next_name)
             .bind(next_confirmed)
             .bind(next_variance)
+            .bind(&next_events)
             .bind(&next_config)
             .bind(ct)
             .bind(nonce)
@@ -398,16 +475,17 @@ pub async fn update_notification_channel(
                 r#"
                 UPDATE notification_channels
                 SET name = $1, notify_on_confirmed = $2, notify_on_variance = $3,
-                    config_public = $4, is_enabled = $5, updated_at = NOW()
-                WHERE id = $6
+                    subscribed_events = $4, config_public = $5, is_enabled = $6, updated_at = NOW()
+                WHERE id = $7
                 RETURNING id, name, channel_type, asset_group_id, notify_on_confirmed, notify_on_variance,
-                          config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
+                          subscribed_events, config_public, (secret_ciphertext IS NOT NULL) AS has_secret,
                           is_enabled, created_at, updated_at
                 "#,
             )
             .bind(&next_name)
             .bind(next_confirmed)
             .bind(next_variance)
+            .bind(&next_events)
             .bind(&next_config)
             .bind(next_enabled)
             .bind(id)
@@ -510,6 +588,65 @@ pub async fn delete_notification_channel(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn load_channel_sink(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    channel_id: Uuid,
+    request_id: Option<Uuid>,
+    instance: &str,
+) -> Result<(Uuid, Box<dyn asi_common::notification::NotificationSink>), AppError> {
+    let row: Option<FullChannelSecretRow> = sqlx::query_as(
+        r#"
+        SELECT id, channel_type, config_public, secret_ciphertext, secret_nonce
+        FROM notification_channels
+        WHERE id = $1
+        "#,
+    )
+    .bind(channel_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| map_db_err(err, "channel lookup failed", request_id, instance))?;
+
+    let Some(row) = row else {
+        return Err(AppError::new(
+            DomainError::NotFound(format!("Notification channel {channel_id} not found.")),
+            request_id,
+            Some(instance.to_string()),
+        ));
+    };
+
+    let channel_type =
+        NotificationChannelType::from_db_str(&row.channel_type).ok_or_else(|| {
+            AppError::new(
+                DomainError::Internal(format!("invalid channel_type '{}'", row.channel_type)),
+                request_id,
+                Some(instance.to_string()),
+            )
+        })?;
+
+    let decrypted = match (&row.secret_ciphertext, &row.secret_nonce) {
+        (Some(ct), Some(nonce)) => {
+            let raw = state
+                .secret_box
+                .decrypt(ct, nonce)
+                .map_err(|domain| AppError::new(domain, request_id, Some(instance.to_string())))?;
+            Some(String::from_utf8(raw).map_err(|e| {
+                AppError::new(
+                    DomainError::Internal(format!("secret UTF-8 decode failed: {e}")),
+                    request_id,
+                    Some(instance.to_string()),
+                )
+            })?)
+        }
+        _ => None,
+    };
+
+    let sink = build_sink(channel_type, &row.config_public, decrypted.as_deref())
+        .map_err(|domain| AppError::new(domain, request_id, Some(instance.to_string())))?;
+
+    Ok((row.id, sink))
+}
+
 #[utoipa::path(
     post,
     path = "/api/v1/notifications/channels/{id}/test",
@@ -529,58 +666,10 @@ pub async fn test_notification_channel(
     let instance = format!("/api/v1/notifications/channels/{id}/test");
     auth.require(Permission::ManageGlobalPoliciesAndNotifications, &instance)?;
     let pool = require_db(&state, auth.request_id, &instance)?;
-
-    let row: Option<FullChannelSecretRow> = sqlx::query_as(
-        r#"
-        SELECT id, channel_type, config_public, secret_ciphertext, secret_nonce
-        FROM notification_channels
-        WHERE id = $1
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| map_db_err(err, "channel lookup failed", auth.request_id, &instance))?;
-
-    let Some(row) = row else {
-        return Err(AppError::new(
-            DomainError::NotFound(format!("Notification channel {id} not found.")),
-            auth.request_id,
-            Some(instance),
-        ));
-    };
-
-    let channel_type =
-        NotificationChannelType::from_db_str(&row.channel_type).ok_or_else(|| {
-            AppError::new(
-                DomainError::Internal(format!("invalid channel_type '{}'", row.channel_type)),
-                auth.request_id,
-                Some(instance.clone()),
-            )
-        })?;
-
-    let decrypted = match (&row.secret_ciphertext, &row.secret_nonce) {
-        (Some(ct), Some(nonce)) => {
-            let raw = state
-                .secret_box
-                .decrypt(ct, nonce)
-                .map_err(|domain| AppError::new(domain, auth.request_id, Some(instance.clone())))?;
-            Some(String::from_utf8(raw).map_err(|e| {
-                AppError::new(
-                    DomainError::Internal(format!("secret UTF-8 decode failed: {e}")),
-                    auth.request_id,
-                    Some(instance.clone()),
-                )
-            })?)
-        }
-        _ => None,
-    };
-
-    let sink = build_sink(channel_type, &row.config_public, decrypted.as_deref())
-        .map_err(|domain| AppError::new(domain, auth.request_id, Some(instance.clone())))?;
+    let (row_id, sink) = load_channel_sink(&state, pool, id, auth.request_id, &instance).await?;
 
     let synthetic = NotificationMessage {
-        delivery_id: row.id,
+        delivery_id: row_id,
         diff_event_id: Uuid::new_v4(),
         asset_group_name: "ASI Test Harness".to_string(),
         host_id: Uuid::new_v4(),
@@ -614,6 +703,91 @@ pub async fn test_notification_channel(
 }
 
 #[utoipa::path(
+    post,
+    path = "/api/v1/notifications/channels/{id}/trigger",
+    tag = "Notifications",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Notification channel UUID")),
+    request_body = TriggerCustomWebhookRequest,
+    responses(
+        (status = 200, description = "Custom webhook event dispatched and recorded", body = TestNotificationResponse),
+        (status = 404, description = "Notification channel not found", body = ProblemDetails)
+    )
+)]
+pub async fn trigger_custom_webhook(
+    auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<TriggerCustomWebhookRequest>,
+) -> Result<Json<TestNotificationResponse>, AppError> {
+    let instance = format!("/api/v1/notifications/channels/{id}/trigger");
+    auth.require(Permission::ManageGlobalPoliciesAndNotifications, &instance)?;
+    let pool = require_db(&state, auth.request_id, &instance)?;
+
+    let event_type = payload.event_type.trim().to_string();
+    if event_type.is_empty() {
+        return Err(AppError::new(
+            DomainError::BadRequest("event_type cannot be empty.".to_string()),
+            auth.request_id,
+            Some(instance),
+        ));
+    }
+
+    let (channel_id, sink) =
+        load_channel_sink(&state, pool, id, auth.request_id, &instance).await?;
+
+    let delivery_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO notification_deliveries (
+            channel_id, diff_event_id, event_type, custom_payload, status, attempt_count
+        )
+        VALUES ($1, NULL, $2, $3, 'pending', 0)
+        RETURNING id
+        "#,
+    )
+    .bind(channel_id)
+    .bind(&event_type)
+    .bind(&payload.payload)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| map_db_err(err, "delivery insert failed", auth.request_id, &instance))?;
+
+    match sink
+        .send_custom_event(&event_type, delivery_id, &payload.payload)
+        .await
+    {
+        Ok(()) => {
+            let _ = sqlx::query(
+                "UPDATE notification_deliveries SET status = 'sent', attempt_count = 1, sent_at = NOW(), last_error = NULL WHERE id = $1",
+            )
+            .bind(delivery_id)
+            .execute(pool)
+            .await;
+            Ok(Json(TestNotificationResponse {
+                delivered: true,
+                detail: format!(
+                    "Custom webhook event '{event_type}' delivered (delivery {delivery_id})."
+                ),
+            }))
+        }
+        Err(err) => {
+            let err_msg = err.to_string();
+            let _ = sqlx::query(
+                "UPDATE notification_deliveries SET status = 'failed', attempt_count = 1, last_error = $1 WHERE id = $2",
+            )
+            .bind(&err_msg)
+            .bind(delivery_id)
+            .execute(pool)
+            .await;
+            Ok(Json(TestNotificationResponse {
+                delivered: false,
+                detail: err_msg,
+            }))
+        }
+    }
+}
+
+#[utoipa::path(
     get,
     path = "/api/v1/notifications/deliveries",
     tag = "Notifications",
@@ -641,6 +815,7 @@ pub async fn list_notification_deliveries(
     let rows: Vec<DeliveryRow> = sqlx::query_as(
         r#"
         SELECT nd.id, nd.channel_id, nc.name AS channel_name, nd.diff_event_id,
+               nd.event_type, nd.custom_payload,
                nd.status, nd.attempt_count, nd.next_retry_at, nd.last_error,
                nd.sent_at, nd.created_at
         FROM notification_deliveries nd
@@ -662,6 +837,8 @@ pub async fn list_notification_deliveries(
             channel_id: r.channel_id,
             channel_name: r.channel_name,
             diff_event_id: r.diff_event_id,
+            event_type: r.event_type,
+            custom_payload: r.custom_payload,
             status: r.status,
             attempt_count: r.attempt_count,
             next_retry_at: r.next_retry_at,

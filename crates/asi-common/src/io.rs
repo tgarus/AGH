@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -104,6 +106,70 @@ pub struct ImportTargetsJsonResponse {
     pub received_count: usize,
     pub inserted_count: usize,
     pub skipped_duplicates: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImportTargetsFlexibleRequest {
+    pub asset_group_id: Option<Uuid>,
+    pub new_group_name: Option<String>,
+    pub format: Option<String>,
+    pub content: String,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub start_scan: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImportTargetsFlexibleResponse {
+    pub asset_group_id: Uuid,
+    pub asset_group_name: String,
+    pub dry_run: bool,
+    pub received_count: usize,
+    pub inserted_count: usize,
+    pub skipped_duplicates: usize,
+    pub detected_summary: BTreeMap<String, usize>,
+    pub started_scan_run_id: Option<Uuid>,
+}
+
+fn default_protocol() -> String {
+    "tcp".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ScanResultImportItem {
+    pub ip_addr: String,
+    pub port: u16,
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
+    pub service_name: Option<String>,
+    pub product: Option<String>,
+    pub version: Option<String>,
+    pub vhost: Option<String>,
+    pub scheme: Option<String>,
+    pub http_status: Option<u16>,
+    pub title: Option<String>,
+    #[serde(default)]
+    pub technologies: Vec<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImportScanResultsRequest {
+    pub asset_group_id: Uuid,
+    pub format: Option<String>,
+    pub content: Option<String>,
+    #[serde(default)]
+    pub items: Vec<ScanResultImportItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImportScanResultsResponse {
+    pub asset_group_id: Uuid,
+    pub hosts_upserted: usize,
+    pub ports_upserted: usize,
+    pub web_observations_upserted: usize,
+    pub diff_events_created: usize,
 }
 
 #[cfg(test)]

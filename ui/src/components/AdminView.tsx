@@ -21,6 +21,9 @@ export function AdminView() {
 
   const [workerName, setWorkerName] = useState('');
   const [workerSegment, setWorkerSegment] = useState('mock-lab');
+  const [visibilityScope, setVisibilityScope] = useState<'all' | 'restricted'>('all');
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [issuedToken, setIssuedToken] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -50,6 +53,32 @@ export function AdminView() {
       });
       if (error || !data) {
         throw new Error(formatApiError(error, 'Failed to load workers.'));
+      }
+      return data;
+    },
+  });
+
+  const assetGroupsQuery = useQuery({
+    queryKey: ['asset-groups'],
+    enabled: canManageWorkers,
+    queryFn: async () => {
+      const { data, error } = await apiClient.GET('/api/v1/asset-groups', {
+        params: { query: { page: 1, per_page: 100 } },
+      });
+      if (error || !data) {
+        throw new Error(formatApiError(error, 'Failed to load asset groups.'));
+      }
+      return data;
+    },
+  });
+
+  const directoryUsersQuery = useQuery({
+    queryKey: ['users-directory'],
+    enabled: canManageWorkers,
+    queryFn: async () => {
+      const { data, error } = await apiClient.GET('/api/v1/users/directory');
+      if (error || !data) {
+        throw new Error(formatApiError(error, 'Failed to load user directory.'));
       }
       return data;
     },
@@ -120,6 +149,9 @@ export function AdminView() {
           name: workerName,
           segment_tag: workerSegment || null,
           max_concurrency: 2,
+          visibility_scope: visibilityScope,
+          allowed_asset_group_ids: visibilityScope === 'restricted' ? selectedGroupIds : [],
+          allowed_user_ids: visibilityScope === 'restricted' ? selectedUserIds : [],
         },
       });
       if (error || !data) {
@@ -130,6 +162,9 @@ export function AdminView() {
     onSuccess: (created) => {
       setErrorMsg(null);
       setWorkerName('');
+      setVisibilityScope('all');
+      setSelectedGroupIds([]);
+      setSelectedUserIds([]);
       setIssuedToken(created.token);
       void queryClient.invalidateQueries({ queryKey: ['admin-workers'] });
       void queryClient.invalidateQueries({ queryKey: ['admin-audit-logs'] });
@@ -271,26 +306,102 @@ export function AdminView() {
             <CardDescription>{t('admin.workersSubtitle')}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <form onSubmit={handleCreateWorker} className="grid gap-2 sm:grid-cols-3">
-              <input
-                type="text"
-                required
-                placeholder={t('admin.workerName')}
-                value={workerName}
-                onChange={(e) => setWorkerName(e.target.value)}
-                className="rounded-md border border-border bg-background px-3 py-2 text-sm"
-              />
-              <input
-                type="text"
-                placeholder={t('admin.workerSegment')}
-                value={workerSegment}
-                onChange={(e) => setWorkerSegment(e.target.value)}
-                className="rounded-md border border-border bg-background px-3 py-2 text-sm"
-              />
-              <Button type="submit" size="sm" disabled={createWorkerTokenMutation.isPending}>
-                <KeyRound className="h-4 w-4" />
-                {t('admin.createWorkerToken')}
-              </Button>
+            <form onSubmit={handleCreateWorker} className="space-y-3">
+              <div className="grid gap-2 sm:grid-cols-4">
+                <input
+                  type="text"
+                  required
+                  placeholder={t('admin.workerName')}
+                  value={workerName}
+                  onChange={(e) => setWorkerName(e.target.value)}
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+                <input
+                  type="text"
+                  placeholder={t('admin.workerSegment')}
+                  value={workerSegment}
+                  onChange={(e) => setWorkerSegment(e.target.value)}
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+                <select
+                  value={visibilityScope}
+                  onChange={(e) => setVisibilityScope(e.target.value as 'all' | 'restricted')}
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+                >
+                  <option value="all">{t('admin.workerScopeAllOption')}</option>
+                  <option value="restricted">{t('admin.workerScopeRestrictedOption')}</option>
+                </select>
+                <Button type="submit" size="sm" disabled={createWorkerTokenMutation.isPending}>
+                  <KeyRound className="h-4 w-4" />
+                  {t('admin.createWorkerToken')}
+                </Button>
+              </div>
+
+              {visibilityScope === 'restricted' ? (
+                <div className="grid gap-4 rounded-md border border-border bg-background/50 p-3 text-xs sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <div className="font-semibold text-muted-foreground">
+                      {t('admin.workerAllowedGroupsLabel')}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {assetGroupsQuery.data?.items.map((g) => {
+                        const checked = selectedGroupIds.includes(g.id);
+                        return (
+                          <label
+                            key={g.id}
+                            className="flex cursor-pointer items-center gap-1.5 rounded border border-border px-2 py-1 hover:bg-secondary/50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setSelectedGroupIds((prev) =>
+                                  e.target.checked
+                                    ? [...prev, g.id]
+                                    : prev.filter((id) => id !== g.id),
+                                )
+                              }
+                            />
+                            <span>{g.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="font-semibold text-muted-foreground">
+                      {t('admin.workerAllowedUsersLabel')}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(directoryUsersQuery.data ?? []).map((u) => {
+                        const checked = selectedUserIds.includes(u.id);
+                        return (
+                          <label
+                            key={u.id}
+                            className="flex cursor-pointer items-center gap-1.5 rounded border border-border px-2 py-1 hover:bg-secondary/50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setSelectedUserIds((prev) =>
+                                  e.target.checked
+                                    ? [...prev, u.id]
+                                    : prev.filter((id) => id !== u.id),
+                                )
+                              }
+                            />
+                            <span>
+                              {u.username} ({u.role})
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </form>
 
             {issuedToken ? (
@@ -316,6 +427,7 @@ export function AdminView() {
                   <tr>
                     <th className="px-3 py-2">{t('admin.workerName')}</th>
                     <th className="px-3 py-2">{t('admin.workerSegment')}</th>
+                    <th className="px-3 py-2">{t('admin.workerVisibility')}</th>
                     <th className="px-3 py-2">{t('admin.status')}</th>
                     <th className="px-3 py-2 text-right">{t('common.actions')}</th>
                   </tr>
@@ -326,6 +438,18 @@ export function AdminView() {
                       <tr key={w.id} className="border-b border-border/60 last:border-0">
                         <td className="px-3 py-2 font-medium">{w.name}</td>
                         <td className="px-3 py-2 text-muted-foreground">{w.segment_tag ?? '—'}</td>
+                        <td className="px-3 py-2">
+                          {w.visibility_scope === 'restricted' ? (
+                            <Badge variant="warning">
+                              {t('admin.scopeRestrictedCount', {
+                                groups: w.allowed_asset_group_ids?.length ?? 0,
+                                users: w.allowed_user_ids?.length ?? 0,
+                              })}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline">{t('admin.scopeAll')}</Badge>
+                          )}
+                        </td>
                         <td className="px-3 py-2">
                           <Badge variant={w.status === 'revoked' ? 'destructive' : 'outline'}>
                             {w.status}
@@ -347,7 +471,7 @@ export function AdminView() {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={4} className="px-3 py-4 text-center text-muted-foreground">
+                      <td colSpan={5} className="px-3 py-4 text-center text-muted-foreground">
                         {t('admin.noWorkers')}
                       </td>
                     </tr>

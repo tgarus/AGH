@@ -26,6 +26,10 @@ struct WorkerNodeRow {
     status: String,
     capabilities: serde_json::Value,
     max_concurrency: i32,
+    visibility_scope: String,
+    allowed_asset_group_ids: Vec<Uuid>,
+    allowed_user_ids: Vec<Uuid>,
+    created_by: Option<Uuid>,
     last_heartbeat_at: Option<DateTime<Utc>>,
     registered_at: DateTime<Utc>,
     revoked_at: Option<DateTime<Utc>>,
@@ -47,6 +51,10 @@ impl WorkerNodeRow {
             status,
             capabilities: self.capabilities,
             max_concurrency: self.max_concurrency,
+            visibility_scope: self.visibility_scope,
+            allowed_asset_group_ids: self.allowed_asset_group_ids,
+            allowed_user_ids: self.allowed_user_ids,
+            created_by: self.created_by,
             last_heartbeat_at: self.last_heartbeat_at,
             registered_at: self.registered_at,
             revoked_at: self.revoked_at,
@@ -75,19 +83,49 @@ pub async fn list_workers(
     let pool = require_db(&state, auth.request_id, instance)?;
     let pg = query.sanitized();
 
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_nodes")
-        .fetch_one(pool)
-        .await
-        .map_err(|err| map_db_err(err, "count failed", auth.request_id, instance))?;
+    let is_admin = auth.user.role == asi_common::rbac::Role::Admin;
+    let total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM worker_nodes
+        WHERE $1::bool
+           OR visibility_scope = 'all'
+           OR created_by = $2
+           OR $2 = ANY(allowed_user_ids)
+           OR EXISTS (
+               SELECT 1 FROM asset_group_members agm
+               WHERE agm.user_id = $2
+                 AND agm.asset_group_id = ANY(worker_nodes.allowed_asset_group_ids)
+           )
+        "#,
+    )
+    .bind(is_admin)
+    .bind(auth.user.id)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| map_db_err(err, "count failed", auth.request_id, instance))?;
 
     let rows: Vec<WorkerNodeRow> = sqlx::query_as(
         r#"
-        SELECT id, name, segment_tag, status, capabilities, max_concurrency, last_heartbeat_at, registered_at, revoked_at
+        SELECT id, name, segment_tag, status, capabilities, max_concurrency,
+               visibility_scope, allowed_asset_group_ids, allowed_user_ids, created_by,
+               last_heartbeat_at, registered_at, revoked_at
         FROM worker_nodes
+        WHERE $1::bool
+           OR visibility_scope = 'all'
+           OR created_by = $2
+           OR $2 = ANY(allowed_user_ids)
+           OR EXISTS (
+               SELECT 1 FROM asset_group_members agm
+               WHERE agm.user_id = $2
+                 AND agm.asset_group_id = ANY(worker_nodes.allowed_asset_group_ids)
+           )
         ORDER BY registered_at DESC
-        LIMIT $1 OFFSET $2
+        LIMIT $3 OFFSET $4
         "#,
     )
+    .bind(is_admin)
+    .bind(auth.user.id)
     .bind(i64::from(pg.per_page))
     .bind(i64::try_from(pg.offset).unwrap_or(i64::MAX))
     .fetch_all(pool)
@@ -131,7 +169,23 @@ pub async fn create_worker_token(
 
     let name = payload.name.trim().to_string();
     let max_concurrency = payload.max_concurrency.unwrap_or(2);
+    let visibility_scope = payload
+        .visibility_scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("all")
+        .to_string();
+    let allowed_asset_group_ids = payload.allowed_asset_group_ids.unwrap_or_default();
+    let allowed_user_ids = payload.allowed_user_ids.unwrap_or_default();
     let mut violations = Vec::new();
+    if !matches!(visibility_scope.as_str(), "all" | "restricted") {
+        violations.push(FieldViolation {
+            field: "visibility_scope".to_string(),
+            code: "INVALID_VALUE".to_string(),
+            message: "visibility_scope must be 'all' or 'restricted'.".to_string(),
+        });
+    }
     if name.is_empty() {
         violations.push(FieldViolation {
             field: "name".to_string(),
@@ -167,18 +221,34 @@ pub async fn create_worker_token(
 
     let row: WorkerNodeRow = sqlx::query_as(
         r#"
-        INSERT INTO worker_nodes (name, segment_tag, token_hash, status, max_concurrency)
-        VALUES ($1, $2, $3, 'offline', $4)
-        RETURNING id, name, segment_tag, status, capabilities, max_concurrency, last_heartbeat_at, registered_at, revoked_at
+        INSERT INTO worker_nodes (
+            name, segment_tag, token_hash, status, max_concurrency,
+            visibility_scope, allowed_asset_group_ids, allowed_user_ids, created_by
+        )
+        VALUES ($1, $2, $3, 'offline', $4, $5, $6, $7, $8)
+        RETURNING id, name, segment_tag, status, capabilities, max_concurrency,
+                  visibility_scope, allowed_asset_group_ids, allowed_user_ids, created_by,
+                  last_heartbeat_at, registered_at, revoked_at
         "#,
     )
     .bind(&name)
     .bind(payload.segment_tag.map(|s| s.trim().to_string()))
     .bind(&token_hash)
     .bind(max_concurrency)
+    .bind(&visibility_scope)
+    .bind(&allowed_asset_group_ids)
+    .bind(&allowed_user_ids)
+    .bind(auth.user.id)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|err| map_db_err(err, "Worker node name already exists.", auth.request_id, instance))?;
+    .map_err(|err| {
+        map_db_err(
+            err,
+            "Worker node name already exists.",
+            auth.request_id,
+            instance,
+        )
+    })?;
 
     let dto = row.into_dto(auth.request_id, instance)?;
     insert_audit_log(
@@ -247,7 +317,9 @@ pub async fn revoke_worker(
         UPDATE worker_nodes
         SET status = 'revoked', revoked_at = NOW()
         WHERE id = $1
-        RETURNING id, name, segment_tag, status, capabilities, max_concurrency, last_heartbeat_at, registered_at, revoked_at
+        RETURNING id, name, segment_tag, status, capabilities, max_concurrency,
+                  visibility_scope, allowed_asset_group_ids, allowed_user_ids, created_by,
+                  last_heartbeat_at, registered_at, revoked_at
         "#,
     )
     .bind(id)

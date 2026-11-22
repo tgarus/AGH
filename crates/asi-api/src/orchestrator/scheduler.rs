@@ -331,6 +331,8 @@ async fn run_scheduler_tick(state: &AppState) -> Result<(), String> {
                 trigger: ScanTriggerType::Sampling,
                 time_slot: Some(slot),
                 started_by: None,
+                include_ignored_ids: Vec::new(),
+                include_all_ignored: false,
                 source_ip: None,
                 request_id: None,
                 instance: "internal://scheduler/sampling",
@@ -342,6 +344,115 @@ async fn run_scheduler_tick(state: &AppState) -> Result<(), String> {
                     error = ?err,
                     "skipped scheduled sampling enqueue"
                 );
+            }
+        }
+    }
+
+    // 5. Trigger user-defined recurring group scan schedules
+    #[derive(FromRow)]
+    struct DueRecurringRow {
+        id: Uuid,
+        asset_group_id: Uuid,
+        interval_value: i32,
+        interval_unit: String,
+        include_all_ignored: bool,
+        include_ignored_ids: Vec<Uuid>,
+    }
+
+    let due_schedules: Vec<DueRecurringRow> = sqlx::query_as(
+        r#"
+        SELECT id, asset_group_id, interval_value, interval_unit,
+               include_all_ignored, include_ignored_ids
+        FROM recurring_scan_schedules
+        WHERE next_run_at <= $1
+        ORDER BY next_run_at ASC
+        "#,
+    )
+    .bind(now)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("recurring schedules query: {e}"))?;
+
+    for sched in due_schedules {
+        let active_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM scan_runs
+                WHERE asset_group_id = $1
+                  AND status IN ('queued', 'running', 'pausing', 'paused')
+            )
+            "#,
+        )
+        .bind(sched.asset_group_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false);
+
+        let step_minutes = if sched.interval_unit == "hours" {
+            i64::from(sched.interval_value).saturating_mul(60)
+        } else {
+            i64::from(sched.interval_value)
+        }
+        .max(1);
+        let next_run_at = now + chrono::Duration::minutes(step_minutes);
+
+        if active_exists {
+            let _ = sqlx::query(
+                "UPDATE recurring_scan_schedules SET next_run_at = $1, updated_at = NOW() WHERE id = $2",
+            )
+            .bind(next_run_at)
+            .bind(sched.id)
+            .execute(pool)
+            .await;
+            continue;
+        }
+
+        match enqueue_scan_run_for_group(EnqueueScanParams {
+            state,
+            pool,
+            asset_group_id: sched.asset_group_id,
+            trigger: ScanTriggerType::Scheduled,
+            time_slot: None,
+            started_by: None,
+            include_ignored_ids: sched.include_ignored_ids,
+            include_all_ignored: sched.include_all_ignored,
+            source_ip: None,
+            request_id: None,
+            instance: "internal://scheduler/recurring",
+        })
+        .await
+        {
+            Ok(run_dto) => {
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE recurring_scan_schedules
+                    SET last_run_at = $1,
+                        last_scan_run_id = $2,
+                        next_run_at = $3,
+                        updated_at = NOW()
+                    WHERE id = $4
+                    "#,
+                )
+                .bind(now)
+                .bind(run_dto.id)
+                .bind(next_run_at)
+                .bind(sched.id)
+                .execute(pool)
+                .await;
+            }
+            Err(err) => {
+                tracing::debug!(
+                    schedule_id = %sched.id,
+                    error = ?err,
+                    "skipped due recurring scan schedule"
+                );
+                let _ = sqlx::query(
+                    "UPDATE recurring_scan_schedules SET next_run_at = $1, updated_at = NOW() WHERE id = $2",
+                )
+                .bind(next_run_at)
+                .bind(sched.id)
+                .execute(pool)
+                .await;
             }
         }
     }

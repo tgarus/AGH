@@ -353,6 +353,7 @@ async fn dd_client_upsert_is_idempotent_and_pull_reads_status() {
         tags: vec!["asi".to_string(), "confirmed_change".to_string()],
         active: true,
         verified: false,
+        ..Default::default()
     };
     let f1 = client.upsert_finding(&payload).await.unwrap();
     let f2 = client.upsert_finding(&payload).await.unwrap(); // PATCH zamiast POST

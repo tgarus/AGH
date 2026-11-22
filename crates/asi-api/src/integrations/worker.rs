@@ -131,6 +131,11 @@ async fn process_outbox_due(state: &AppState) -> Result<(), String> {
                 .execute(pool)
                 .await
                 .map_err(|e| e.to_string())?;
+                let _ = sqlx::query(
+                    "UPDATE defectdojo_config SET last_error = NULL, updated_at = NOW() WHERE id = TRUE AND last_error IS NOT NULL",
+                )
+                .execute(pool)
+                .await;
                 let ev_id = Uuid::new_v4();
                 state.events.emit_ui(
                     "defectdojo.outbox",
@@ -221,6 +226,11 @@ async fn push_manual_group(
         if push_diff_event(pool, cfg, client, d).await.is_ok() {
             n += 1;
         }
+    }
+    if cfg.finding_scope == asi_common::defectdojo::DdFindingScope::Inventory {
+        n += crate::integrations::push::push_group_inventory_hosts(pool, cfg, client, group_id)
+            .await
+            .unwrap_or(0);
     }
     Ok(format!("group {group_id}: pushed {n} findings (no runs)"))
 }

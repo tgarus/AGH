@@ -297,6 +297,8 @@ pub fn compute_preflight(
         estimated_duration_seconds,
         fits_in_window,
         warnings,
+        matched_ignored_targets: Vec::new(),
+        overridden_ignored_count: 0,
     }
 }
 

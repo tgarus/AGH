@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { OctagonX, Pause, Play, RefreshCw } from 'lucide-react';
+import { Activity, BarChart3, OctagonX, Pause, Play, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -30,6 +30,18 @@ export function DashboardView({
       return data;
     },
     refetchInterval: 10_000,
+  });
+
+  const analyticsQuery = useQuery({
+    queryKey: ['dashboard-analytics'],
+    queryFn: async () => {
+      const { data, error } = await apiClient.GET('/api/v1/dashboard/analytics');
+      if (error || !data) {
+        throw new Error(formatApiError(error, 'Failed to load dashboard analytics.'));
+      }
+      return data;
+    },
+    refetchInterval: 15_000,
   });
 
   const scansQuery = useQuery({
@@ -93,6 +105,17 @@ export function DashboardView({
 
   const canControlScans = hasPermission('run_or_stop_scans');
   const s = summaryQuery.data;
+  const analytics = analyticsQuery.data;
+  const maxScanTargets = Math.max(1, ...(analytics?.recent_scans ?? []).map((p) => p.total_targets));
+  const maxScanDuration = Math.max(
+    1,
+    ...(analytics?.recent_scans ?? []).map((p) => p.duration_seconds ?? 0),
+  );
+  const maxPortHosts = Math.max(1, ...(analytics?.top_open_ports ?? []).map((p) => p.host_count));
+  const totalSeverityDiffs = Math.max(
+    1,
+    Object.values(analytics?.diffs_by_severity ?? {}).reduce((a, b) => a + b, 0),
+  );
 
   return (
     <div className="space-y-4">
@@ -161,6 +184,193 @@ export function DashboardView({
           </CardContent>
         </Card>
       </div>
+
+      {/* Analytics Charts Section */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-primary" />
+              {t('dashboard.analytics.recentScansChartTitle')}
+            </CardTitle>
+            <CardDescription>{t('dashboard.analytics.recentScansChartSubtitle')}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {analytics?.recent_scans.length ? (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-4 text-[11px] text-muted-foreground">
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block h-2.5 w-2.5 rounded-sm bg-sky-500" />
+                    {t('dashboard.analytics.legendTargets')}
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block h-2.5 w-2.5 rounded-sm bg-amber-500" />
+                    {t('dashboard.analytics.legendDuration')}
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block h-2.5 w-2.5 rounded-sm bg-rose-500" />
+                    {t('dashboard.analytics.legendConfirmedDiffs')}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-6">
+                  {analytics.recent_scans.map((pt) => {
+                    const targetPct = Math.max(8, Math.round((pt.total_targets / maxScanTargets) * 100));
+                    const durPct = Math.max(
+                      6,
+                      Math.round(((pt.duration_seconds ?? 0) / maxScanDuration) * 100),
+                    );
+                    const totalDiffs = pt.confirmed_diffs + pt.variance_diffs;
+                    return (
+                      <div
+                        key={pt.scan_run_id}
+                        className="flex flex-col justify-between rounded-md border border-border bg-background/70 p-2 text-[11px]"
+                        title={`${pt.asset_group_name} (${pt.status})`}
+                      >
+                        <div className="mb-1 flex items-end justify-center gap-1.5 h-24 border-b border-border/60 pb-1">
+                          <div
+                            className="w-3 rounded-t bg-sky-500/85 transition-all"
+                            style={{ height: `${targetPct}%` }}
+                            title={`${t('dashboard.analytics.legendTargets')}: ${pt.total_targets}`}
+                          />
+                          <div
+                            className="w-3 rounded-t bg-amber-500/85 transition-all"
+                            style={{ height: `${durPct}%` }}
+                            title={`${t('dashboard.analytics.legendDuration')}: ${pt.duration_seconds ?? 0}s`}
+                          />
+                          {totalDiffs > 0 ? (
+                            <div
+                              className="w-3 rounded-t bg-rose-500/85 transition-all"
+                              style={{ height: `${Math.min(100, Math.max(12, totalDiffs * 12))}%` }}
+                              title={`Diffs: ${pt.confirmed_diffs} / ${pt.variance_diffs}`}
+                            />
+                          ) : null}
+                        </div>
+                        <div className="space-y-0.5 truncate">
+                          <div className="truncate font-semibold text-foreground">{pt.asset_group_name}</div>
+                          <div className="font-mono text-[10px] text-muted-foreground">
+                            {pt.total_targets} IP · {pt.duration_seconds !== null ? `${pt.duration_seconds}s` : pt.status}
+                          </div>
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-rose-300">+{pt.confirmed_diffs} diff</span>
+                            <span className="text-muted-foreground">
+                              {pt.completed_chunks}/{pt.total_chunks}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">{t('dashboard.analytics.noScansYet')}</p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-4 w-4 text-primary" />
+              {t('dashboard.analytics.distributionsTitle')}
+            </CardTitle>
+            <CardDescription>{t('dashboard.analytics.distributionsSubtitle')}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">
+                {t('dashboard.analytics.diffSeverityHeading')}
+              </div>
+              {(['high', 'medium', 'low', 'info'] as const).map((sev) => {
+                const count = analytics?.diffs_by_severity[sev] ?? 0;
+                const pct = Math.round((count / totalSeverityDiffs) * 100);
+                const barCls =
+                  sev === 'high'
+                    ? 'bg-red-500'
+                    : sev === 'medium'
+                      ? 'bg-amber-500'
+                      : sev === 'low'
+                        ? 'bg-sky-500'
+                        : 'bg-slate-500';
+                return (
+                  <div key={sev} className="space-y-1 text-xs">
+                    <div className="flex justify-between font-mono">
+                      <span className="uppercase">{sev}</span>
+                      <span>
+                        {count} ({pct}%)
+                      </span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded bg-muted">
+                      <div className={`h-full ${barCls}`} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="space-y-2 border-t border-border pt-3">
+              <div className="text-xs font-medium text-muted-foreground">
+                {t('dashboard.analytics.topPortsHeading')}
+              </div>
+              {analytics?.top_open_ports.length ? (
+                <div className="space-y-1.5">
+                  {analytics.top_open_ports.slice(0, 6).map((p) => {
+                    const pct = Math.max(6, Math.round((p.host_count / maxPortHosts) * 100));
+                    return (
+                      <div key={`${p.port}-${p.protocol}`} className="flex items-center gap-2 text-xs">
+                        <span className="w-28 shrink-0 truncate font-mono">
+                          {p.port}/{p.protocol} {p.service_name ? `(${p.service_name})` : ''}
+                        </span>
+                        <div className="h-2 flex-1 overflow-hidden rounded bg-muted">
+                          <div className="h-full bg-emerald-500" style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="w-16 text-right font-mono text-muted-foreground">
+                          {p.host_count} {t('dashboard.analytics.hostsShort')}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">{t('dashboard.analytics.noPortsYet')}</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {analytics?.group_stats.length ? (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle>{t('dashboard.analytics.groupBreakdownTitle')}</CardTitle>
+            <CardDescription>{t('dashboard.analytics.groupBreakdownSubtitle')}</CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="border-b border-border text-muted-foreground">
+                <tr>
+                  <th className="py-2 pr-4">{t('dashboard.analytics.colGroup')}</th>
+                  <th className="py-2 pr-4">{t('dashboard.analytics.colActiveHosts')}</th>
+                  <th className="py-2 pr-4">{t('dashboard.analytics.colOpenPorts')}</th>
+                  <th className="py-2 pr-4">{t('dashboard.analytics.colConfirmedDiffs')}</th>
+                  <th className="py-2">{t('dashboard.analytics.colTotalScans')}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/60">
+                {analytics.group_stats.map((g) => (
+                  <tr key={g.asset_group_id}>
+                    <td className="py-2 pr-4 font-medium">{g.asset_group_name}</td>
+                    <td className="py-2 pr-4 font-mono">{g.active_hosts}</td>
+                    <td className="py-2 pr-4 font-mono">{g.open_ports}</td>
+                    <td className="py-2 pr-4 font-mono">{g.confirmed_diffs}</td>
+                    <td className="py-2 font-mono">{g.total_scans}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
