@@ -87,7 +87,7 @@ export function DdPayloadModal({ mode, targetId, onClose, onPushed }: DdPayloadM
     setNumericalSeverity(eff.numerical_severity ?? SEVERITY_TO_NUM[eff.severity] ?? 'S0');
     setComponentName(eff.component_name ?? '');
     setTagsText((eff.tags ?? []).join(', '));
-    setDescription(eff.description);
+    setDescription(data.saved_override?.description ?? data.default_payload.description);
     setExtraNotes(data.saved_override?.extra_notes ?? '');
     setMitigation(eff.mitigation ?? '');
     setImpact(eff.impact ?? '');
