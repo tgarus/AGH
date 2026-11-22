@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, BarChart3, OctagonX, Pause, Play, RefreshCw } from 'lucide-react';
+import { Activity, BarChart3, ExternalLink, OctagonX, Pause, Play, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/context/AuthContext';
+import { cn } from '@/lib/utils';
 import { formatBullet } from '@/utils/formatBullet';
 
 export function DashboardView({
@@ -19,6 +20,8 @@ export function DashboardView({
   const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [selectedScanRunId, setSelectedScanRunId] = useState<string | null>(null);
+  const [hoveredScanRunId, setHoveredScanRunId] = useState<string | null>(null);
 
   const summaryQuery = useQuery({
     queryKey: ['dashboard-summary'],
@@ -117,6 +120,112 @@ export function DashboardView({
     Object.values(analytics?.diffs_by_severity ?? {}).reduce((a, b) => a + b, 0),
   );
 
+  const activeScanPoint =
+    analytics?.recent_scans.find(
+      (p) => p.scan_run_id === (hoveredScanRunId || selectedScanRunId),
+    ) ??
+    (analytics?.recent_scans.length
+      ? analytics.recent_scans[analytics.recent_scans.length - 1]
+      : null);
+
+  const totalRecentTargets = (analytics?.recent_scans ?? []).reduce(
+    (acc, p) => acc + p.total_targets,
+    0,
+  );
+  const totalRecentDiffs = (analytics?.recent_scans ?? []).reduce(
+    (acc, p) => acc + p.confirmed_diffs,
+    0,
+  );
+  const avgScanDuration = analytics?.recent_scans.length
+    ? Math.round(
+        analytics.recent_scans.reduce((acc, p) => acc + (p.duration_seconds ?? 0), 0) /
+          analytics.recent_scans.length,
+      )
+    : 0;
+
+  const formatScanTime = (isoString: string) => {
+    try {
+      const d = new Date(isoString);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      }
+    } catch {
+      // fallback
+    }
+    return isoString.slice(11, 16) || '—';
+  };
+
+  const formatFullDateTime = (isoString: string) => {
+    try {
+      const d = new Date(isoString);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleString([], {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+      }
+    } catch {
+      // fallback
+    }
+    return isoString;
+  };
+
+  const scans = analytics?.recent_scans ?? [];
+  const svgWidth = 560;
+  const svgHeight = 180;
+  const padLeft = 45;
+  const padRight = 45;
+  const padTop = 20;
+  const padBottom = 30;
+  const plotWidth = svgWidth - padLeft - padRight;
+  const plotHeight = svgHeight - padTop - padBottom;
+
+  const chartPoints = scans.map((pt, i) => {
+    const x =
+      scans.length > 1
+        ? padLeft + (i / (scans.length - 1)) * plotWidth
+        : padLeft + plotWidth / 2;
+    const targetNorm = maxScanTargets > 0 ? pt.total_targets / maxScanTargets : 0;
+    const durNorm = maxScanDuration > 0 ? (pt.duration_seconds ?? 0) / maxScanDuration : 0;
+    const yTarget = padTop + (1 - targetNorm) * plotHeight;
+    const yDuration = padTop + (1 - durNorm) * plotHeight;
+    const timeStr = formatScanTime(pt.started_at);
+    return {
+      ...pt,
+      x,
+      yTarget,
+      yDuration,
+      timeStr,
+    };
+  });
+
+  const targetPathD =
+    chartPoints.length > 0
+      ? chartPoints
+          .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.yTarget.toFixed(1)}`)
+          .join(' ')
+      : '';
+
+  const targetAreaD =
+    chartPoints.length > 0 && chartPoints[0] && chartPoints[chartPoints.length - 1]
+      ? `${targetPathD} L ${chartPoints[chartPoints.length - 1]!.x.toFixed(1)} ${(padTop + plotHeight).toFixed(1)} L ${chartPoints[0]!.x.toFixed(1)} ${(padTop + plotHeight).toFixed(1)} Z`
+      : '';
+
+  const durationPathD =
+    chartPoints.length > 0
+      ? chartPoints
+          .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.yDuration.toFixed(1)}`)
+          .join(' ')
+      : '';
+
+  const durationAreaD =
+    chartPoints.length > 0 && chartPoints[0] && chartPoints[chartPoints.length - 1]
+      ? `${durationPathD} L ${chartPoints[chartPoints.length - 1]!.x.toFixed(1)} ${(padTop + plotHeight).toFixed(1)} L ${chartPoints[0]!.x.toFixed(1)} ${(padTop + plotHeight).toFixed(1)} Z`
+      : '';
+
   return (
     <div className="space-y-4">
       {errorMsg ? (
@@ -187,80 +296,387 @@ export function DashboardView({
 
       {/* Analytics Charts Section */}
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
+        <Card className="overflow-hidden">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="h-4 w-4 text-primary" />
-              {t('dashboard.analytics.recentScansChartTitle')}
-            </CardTitle>
-            <CardDescription>{t('dashboard.analytics.recentScansChartSubtitle')}</CardDescription>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <BarChart3 className="h-4 w-4 text-primary" />
+                  {t('dashboard.analytics.recentScansChartTitle')}
+                </CardTitle>
+                <CardDescription>{t('dashboard.analytics.recentScansChartSubtitle')}</CardDescription>
+              </div>
+              {analytics?.recent_scans.length ? (
+                <div className="flex items-center gap-2 text-xs font-mono">
+                  <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">
+                    {analytics.recent_scans.length} {t('dashboard.kpiScansWorkers').split('/')[0]?.trim().toLowerCase() ?? 'scans'}
+                  </span>
+                  <span className="rounded bg-sky-950/60 text-sky-300 border border-sky-800/60 px-2 py-0.5">
+                    {totalRecentTargets} IP
+                  </span>
+                  {totalRecentDiffs > 0 ? (
+                    <span className="rounded bg-rose-950/60 text-rose-300 border border-rose-800/60 px-2 py-0.5 font-bold">
+                      +{totalRecentDiffs} diff
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3 overflow-hidden">
             {analytics?.recent_scans.length ? (
               <div className="space-y-3">
-                <div className="flex flex-wrap items-center gap-4 text-[11px] text-muted-foreground">
-                  <span className="flex items-center gap-1.5">
-                    <span className="inline-block h-2.5 w-2.5 rounded-sm bg-sky-500" />
-                    {t('dashboard.analytics.legendTargets')}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="inline-block h-2.5 w-2.5 rounded-sm bg-amber-500" />
-                    {t('dashboard.analytics.legendDuration')}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="inline-block h-2.5 w-2.5 rounded-sm bg-rose-500" />
-                    {t('dashboard.analytics.legendConfirmedDiffs')}
-                  </span>
+                {/* Visual Legend */}
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2 text-[11px] text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <span className="flex items-center gap-1.5 font-medium">
+                      <span className="inline-block h-2.5 w-2.5 rounded-sm bg-sky-500 shadow-sm" />
+                      {t('dashboard.analytics.legendTargets')}
+                      <span className="font-mono text-[10px] text-sky-400">
+                        (max {maxScanTargets})
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-1.5 font-medium">
+                      <span className="inline-block h-2.5 w-2.5 rounded-sm bg-amber-500 shadow-sm" />
+                      {t('dashboard.analytics.legendDuration')}
+                      <span className="font-mono text-[10px] text-amber-400">
+                        (max {maxScanDuration}s, avg {avgScanDuration}s)
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-1.5 font-medium">
+                      <span className="inline-block h-2.5 w-2.5 rounded-sm bg-rose-500 shadow-sm" />
+                      {t('dashboard.analytics.legendConfirmedDiffs')}
+                    </span>
+                  </div>
                 </div>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-6">
-                  {analytics.recent_scans.map((pt) => {
-                    const targetPct = Math.max(8, Math.round((pt.total_targets / maxScanTargets) * 100));
-                    const durPct = Math.max(
-                      6,
-                      Math.round(((pt.duration_seconds ?? 0) / maxScanDuration) * 100),
-                    );
-                    const totalDiffs = pt.confirmed_diffs + pt.variance_diffs;
-                    return (
-                      <div
-                        key={pt.scan_run_id}
-                        className="flex flex-col justify-between rounded-md border border-border bg-background/70 p-2 text-[11px]"
-                        title={`${pt.asset_group_name} (${pt.status})`}
-                      >
-                        <div className="mb-1 flex items-end justify-center gap-1.5 h-24 border-b border-border/60 pb-1">
-                          <div
-                            className="w-3 rounded-t bg-sky-500/85 transition-all"
-                            style={{ height: `${targetPct}%` }}
-                            title={`${t('dashboard.analytics.legendTargets')}: ${pt.total_targets}`}
+
+                {/* Responsive Dual-Line SVG Chart - No Horizontal Overflow */}
+                <div className="relative rounded-lg border border-border/80 bg-background/50 p-2 overflow-hidden">
+                  <svg
+                    viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                    className="w-full h-44 select-none overflow-hidden"
+                    preserveAspectRatio="none"
+                  >
+                    <defs>
+                      <linearGradient id="targetGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.25" />
+                        <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.0" />
+                      </linearGradient>
+                      <linearGradient id="durationGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#fbbf24" stopOpacity="0.2" />
+                        <stop offset="100%" stopColor="#fbbf24" stopOpacity="0.0" />
+                      </linearGradient>
+                    </defs>
+
+                    {/* Horizontal Grid Guide Lines & Y-axis labels */}
+                    {/* 100% line */}
+                    <line
+                      x1={padLeft}
+                      y1={padTop}
+                      x2={svgWidth - padRight}
+                      y2={padTop}
+                      stroke="#334155"
+                      strokeWidth="1"
+                      strokeDasharray="3 3"
+                    />
+                    <text
+                      x={padLeft - 6}
+                      y={padTop + 3}
+                      textAnchor="end"
+                      fill="#38bdf8"
+                      fontSize="9"
+                      fontFamily="monospace"
+                      fontWeight="bold"
+                    >
+                      {maxScanTargets}
+                    </text>
+                    <text
+                      x={svgWidth - padRight + 6}
+                      y={padTop + 3}
+                      textAnchor="start"
+                      fill="#fbbf24"
+                      fontSize="9"
+                      fontFamily="monospace"
+                      fontWeight="bold"
+                    >
+                      {maxScanDuration}s
+                    </text>
+
+                    {/* 50% line */}
+                    <line
+                      x1={padLeft}
+                      y1={padTop + plotHeight / 2}
+                      x2={svgWidth - padRight}
+                      y2={padTop + plotHeight / 2}
+                      stroke="#334155"
+                      strokeWidth="1"
+                      strokeDasharray="3 3"
+                      strokeOpacity="0.6"
+                    />
+                    <text
+                      x={padLeft - 6}
+                      y={padTop + plotHeight / 2 + 3}
+                      textAnchor="end"
+                      fill="#38bdf8"
+                      fontSize="8"
+                      fontFamily="monospace"
+                      opacity="0.75"
+                    >
+                      {Math.round(maxScanTargets / 2)}
+                    </text>
+                    <text
+                      x={svgWidth - padRight + 6}
+                      y={padTop + plotHeight / 2 + 3}
+                      textAnchor="start"
+                      fill="#fbbf24"
+                      fontSize="8"
+                      fontFamily="monospace"
+                      opacity="0.75"
+                    >
+                      {Math.round(maxScanDuration / 2)}s
+                    </text>
+
+                    {/* 0% baseline */}
+                    <line
+                      x1={padLeft}
+                      y1={padTop + plotHeight}
+                      x2={svgWidth - padRight}
+                      y2={padTop + plotHeight}
+                      stroke="#475569"
+                      strokeWidth="1"
+                    />
+                    <text
+                      x={padLeft - 6}
+                      y={padTop + plotHeight + 3}
+                      textAnchor="end"
+                      fill="#38bdf8"
+                      fontSize="8"
+                      fontFamily="monospace"
+                      opacity="0.5"
+                    >
+                      0
+                    </text>
+                    <text
+                      x={svgWidth - padRight + 6}
+                      y={padTop + plotHeight + 3}
+                      textAnchor="start"
+                      fill="#fbbf24"
+                      fontSize="8"
+                      fontFamily="monospace"
+                      opacity="0.5"
+                    >
+                      0s
+                    </text>
+
+                    {/* Vertical guideline for active point */}
+                    {activeScanPoint ? (() => {
+                      const curPt = chartPoints.find((p) => p.scan_run_id === activeScanPoint.scan_run_id);
+                      if (!curPt) return null;
+                      return (
+                        <line
+                          x1={curPt.x}
+                          y1={padTop}
+                          x2={curPt.x}
+                          y2={padTop + plotHeight}
+                          stroke="#94a3b8"
+                          strokeWidth="1.5"
+                          strokeDasharray="3 3"
+                          opacity="0.8"
+                        />
+                      );
+                    })() : null}
+
+                    {/* Target Area and Line (Sky Blue) */}
+                    {targetAreaD ? (
+                      <path d={targetAreaD} fill="url(#targetGrad)" />
+                    ) : null}
+                    {targetPathD ? (
+                      <path
+                        d={targetPathD}
+                        fill="none"
+                        stroke="#38bdf8"
+                        strokeWidth="2.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    ) : null}
+
+                    {/* Duration Area and Line (Amber) */}
+                    {durationAreaD ? (
+                      <path d={durationAreaD} fill="url(#durationGrad)" />
+                    ) : null}
+                    {durationPathD ? (
+                      <path
+                        d={durationPathD}
+                        fill="none"
+                        stroke="#fbbf24"
+                        strokeWidth="2"
+                        strokeDasharray="4 2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    ) : null}
+
+                    {/* Points and Labels */}
+                    {chartPoints.map((p) => {
+                      const isSelected = activeScanPoint?.scan_run_id === p.scan_run_id;
+                      return (
+                        <g key={p.scan_run_id}>
+                          {/* Target Point Dot */}
+                          <circle
+                            cx={p.x}
+                            cy={p.yTarget}
+                            r={isSelected ? 5.5 : 3.5}
+                            fill="#0284c7"
+                            stroke="#38bdf8"
+                            strokeWidth={isSelected ? 2.5 : 1.5}
                           />
-                          <div
-                            className="w-3 rounded-t bg-amber-500/85 transition-all"
-                            style={{ height: `${durPct}%` }}
-                            title={`${t('dashboard.analytics.legendDuration')}: ${pt.duration_seconds ?? 0}s`}
+
+                          {/* Duration Point Dot */}
+                          <circle
+                            cx={p.x}
+                            cy={p.yDuration}
+                            r={isSelected ? 5.5 : 3.5}
+                            fill="#b45309"
+                            stroke="#fbbf24"
+                            strokeWidth={isSelected ? 2.5 : 1.5}
                           />
-                          {totalDiffs > 0 ? (
-                            <div
-                              className="w-3 rounded-t bg-rose-500/85 transition-all"
-                              style={{ height: `${Math.min(100, Math.max(12, totalDiffs * 12))}%` }}
-                              title={`Diffs: ${pt.confirmed_diffs} / ${pt.variance_diffs}`}
-                            />
+
+                          {/* Confirmed Diff Alert Badge */}
+                          {p.confirmed_diffs > 0 ? (
+                            <g>
+                              <circle
+                                cx={p.x}
+                                cy={p.yTarget}
+                                r={9}
+                                fill="none"
+                                stroke="#f43f5e"
+                                strokeWidth="1.5"
+                              />
+                              <rect
+                                x={p.x - 12}
+                                y={Math.max(2, Math.min(p.yTarget, p.yDuration) - 18)}
+                                width={24}
+                                height={12}
+                                rx={3}
+                                fill="#881337"
+                                stroke="#f43f5e"
+                                strokeWidth="0.8"
+                              />
+                              <text
+                                x={p.x}
+                                y={Math.max(2, Math.min(p.yTarget, p.yDuration) - 9)}
+                                textAnchor="middle"
+                                fill="#fecdd3"
+                                fontSize="8"
+                                fontFamily="monospace"
+                                fontWeight="bold"
+                              >
+                                +{p.confirmed_diffs}
+                              </text>
+                            </g>
                           ) : null}
-                        </div>
-                        <div className="space-y-0.5 truncate">
-                          <div className="truncate font-semibold text-foreground">{pt.asset_group_name}</div>
-                          <div className="font-mono text-[10px] text-muted-foreground">
-                            {pt.total_targets} IP · {pt.duration_seconds !== null ? `${pt.duration_seconds}s` : pt.status}
-                          </div>
-                          <div className="flex items-center justify-between text-[10px]">
-                            <span className="text-rose-300">+{pt.confirmed_diffs} diff</span>
-                            <span className="text-muted-foreground">
-                              {pt.completed_chunks}/{pt.total_chunks}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+
+                          {/* X-Axis Time Label */}
+                          <text
+                            x={p.x}
+                            y={padTop + plotHeight + 16}
+                            textAnchor="middle"
+                            fill={isSelected ? '#f8fafc' : '#94a3b8'}
+                            fontSize="9"
+                            fontFamily="monospace"
+                            fontWeight={isSelected ? 'bold' : 'normal'}
+                          >
+                            {p.timeStr}
+                          </text>
+
+                          {/* Transparent Interactive Click/Hover Slice */}
+                          {(() => {
+                            const sliceW = chartPoints.length > 1 ? plotWidth / (chartPoints.length - 1) : plotWidth;
+                            return (
+                              <rect
+                                x={Math.max(0, p.x - sliceW / 2)}
+                                y={padTop - 10}
+                                width={sliceW}
+                                height={plotHeight + 35}
+                                fill="transparent"
+                                className="cursor-pointer"
+                                onMouseEnter={() => setHoveredScanRunId(p.scan_run_id)}
+                                onMouseLeave={() => setHoveredScanRunId(null)}
+                                onClick={() => setSelectedScanRunId(p.scan_run_id)}
+                              />
+                            );
+                          })()}
+                        </g>
+                      );
+                    })}
+                  </svg>
                 </div>
+
+                {/* Active Scan Inspector / Details Strip */}
+                {activeScanPoint ? (
+                  <div className="rounded-lg border border-border/80 bg-background/80 p-2.5 text-xs overflow-hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-2.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={cn(
+                            'inline-block h-2 w-2 rounded-full shrink-0',
+                            activeScanPoint.status === 'completed'
+                              ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+                              : activeScanPoint.status === 'failed'
+                                ? 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.8)]'
+                                : 'bg-amber-400 animate-pulse',
+                          )}
+                        />
+                        <span className="font-semibold text-foreground truncate max-w-[150px] sm:max-w-[200px]">
+                          {activeScanPoint.asset_group_name}
+                        </span>
+                        <Badge variant="outline" className="font-mono text-[10px] uppercase shrink-0">
+                          {activeScanPoint.status}
+                        </Badge>
+                        <span className="text-[11px] text-muted-foreground font-mono truncate hidden sm:inline">
+                          {formatFullDateTime(activeScanPoint.started_at)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3 font-mono text-[11px]">
+                        <div className="flex items-center gap-1 text-sky-400">
+                          <span className="text-muted-foreground">IPs:</span>
+                          <span className="font-bold">{activeScanPoint.total_targets}</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-amber-400">
+                          <span className="text-muted-foreground">Duration:</span>
+                          <span className="font-bold">
+                            {activeScanPoint.duration_seconds !== null
+                              ? `${activeScanPoint.duration_seconds}s`
+                              : '—'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1 text-muted-foreground">
+                          <span>Chunks:</span>
+                          <span className="text-foreground">
+                            {activeScanPoint.completed_chunks}/{activeScanPoint.total_chunks}
+                          </span>
+                        </div>
+                        {activeScanPoint.confirmed_diffs > 0 ? (
+                          <div className="flex items-center gap-1 text-rose-400 font-bold">
+                            <span>Diffs:</span>
+                            <span>+{activeScanPoint.confirmed_diffs}</span>
+                          </div>
+                        ) : null}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 text-[11px] px-2 text-primary hover:text-primary gap-1"
+                          onClick={() => onNavigate('scans')}
+                        >
+                          {t('dashboard.openView')}
+                          <ExternalLink className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">{t('dashboard.analytics.noScansYet')}</p>
