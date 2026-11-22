@@ -1,4 +1,3 @@
-import { Shield } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -51,9 +50,11 @@ export function LoginView() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <div className="mb-2 flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center border border-border bg-background text-foreground">
-              <Shield className="h-4 w-4" />
-            </div>
+            <img
+              src="/favicon.svg"
+              alt={t('app.shortName')}
+              className="h-9 w-9 shrink-0"
+            />
             <div>
               <CardTitle className="text-sm normal-case tracking-normal text-foreground">
                 {t('auth.loginTitle')}

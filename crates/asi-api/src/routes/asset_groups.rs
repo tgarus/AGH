@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::app::AppState;
 use crate::audit::{insert_audit_log, AuditRecord};
 use crate::error::AppError;
-use crate::routes::common::{extract_source_ip, map_db_err, require_db};
+use crate::routes::common::{ensure_user_group_access, extract_source_ip, map_db_err, require_db};
 use crate::routes::policies::ScanPolicyRow;
 use crate::security::auth_extractor::AuthenticatedUser;
 
@@ -277,6 +277,7 @@ pub async fn get_asset_group(
     let instance = format!("/api/v1/asset-groups/{id}");
     auth.require(Permission::ViewInventoryAndDiffs, &instance)?;
     let pool = require_db(&state, auth.request_id, &instance)?;
+    ensure_user_group_access(pool, &auth, id, &instance).await?;
 
     let group_row: Option<AssetGroupRow> = sqlx::query_as(
         r#"
@@ -493,6 +494,15 @@ pub async fn set_asset_group_members(
             unique_ids.push(uid);
         }
     }
+    let admin_ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE role = 'Admin'")
+        .fetch_all(pool)
+        .await
+        .map_err(|err| map_db_err(err, "admin users lookup failed", auth.request_id, &instance))?;
+    for admin_id in admin_ids {
+        if !unique_ids.contains(&admin_id) {
+            unique_ids.push(admin_id);
+        }
+    }
 
     let mut tx = pool
         .begin()
@@ -613,9 +623,17 @@ pub async fn update_asset_group(
         ));
     }
 
-    let next_desc = payload
-        .description
-        .or_else(|| before_dto.description.clone());
+    let next_desc = match payload.description {
+        Some(raw) => {
+            let trimmed = raw.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        None => before_dto.description.clone(),
+    };
     let next_policy = payload.policy_id.unwrap_or(before_dto.policy_id);
     let next_cron = payload
         .schedule_cron

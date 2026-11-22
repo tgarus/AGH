@@ -29,7 +29,7 @@
     "modeLabel": "Tryb interfejsu",
     "modeAnalystShort": "Analityk",
     "modeConfigShort": "Konfiguracja",
-    "modeAnalystBadge": "Tryb Analityka (Triage 360°)",
+    "modeAnalystBadge": "Tryb Analityka",
     "modeConfigBadge": "Tryb Konfiguracji i Orkiestracji",
     "sectionAnalytics": "Analityka i Triage",
     "sectionConfig": "Konfiguracja i Orkiestracja",
@@ -139,7 +139,17 @@
     "membersSubtitle": "Admin może przypisać wielu użytkowników do tej grupy; brak przypisań oznacza dostęp dla wszystkich.",
     "saveMembers": "Zapisz przypisania użytkowników",
     "membersSaved": "Zapisano przypisania użytkowników do grupy.",
-    "membersAllFallback": "Brak przypisanych użytkowników (dostęp ogólny zgodnie z rolą)."
+    "membersAllFallback": "Brak przypisanych użytkowników (dostęp ogólny zgodnie z rolą).",
+    "settingsTitle": "Ustawienia grupy zasobów",
+    "nameLabel": "Nazwa grupy",
+    "descLabel": "Opis grupy",
+    "policySelectLabel": "Polityka skanowania",
+    "samplingEnabledLabel": "Próbkowanie dobowe (4 sloty czasowe)",
+    "adminAlwaysAccess": "Admin (stały dostęp)",
+    "unsavedChangesDetected": "Wykryto niezapisane zmiany w ustawieniach grupy",
+    "allSettingsSaved": "Wszystkie ustawienia zapisane",
+    "saveAllSettings": "Zapisz ustawienia grupy",
+    "allSettingsSavedToast": "Zapisano ustawienia grupy i przypisania użytkowników."
   },
   "policies": {
     "title": "Polityki skanowania i okna czasowe",
@@ -512,7 +522,8 @@
       "overrideSaved": "Zapisano nadpisanie payloadu (używane także przy auto-push).",
       "pushedDiffOk": "DefectDojo: {{note}}",
       "pushedOk": "Wysłano do DefectDojo (finding #{{id}}).",
-      "invalidCustomFields": "Dodatkowe pola JSON muszą być poprawnym obiektem JSON."
+      "invalidCustomFields": "Dodatkowe pola JSON muszą być poprawnym obiektem JSON.",
+      "fallbackNotice": "Podgląd wygenerowano z lokalnych danych zdarzenia/hosta."
     },
     "messages": {
       "saved": "Konfiguracja zapisana.",
@@ -533,5 +544,13 @@
       "attempts": "prób",
       "retryAt": "retry"
     }
+  },
+  "pagination": {
+    "showing": "Pokazano {{from}}–{{to}} z {{total}}",
+    "empty": "Brak pozycji do wyświetlenia",
+    "perPage": "Na stronę:",
+    "prev": "Poprzednia",
+    "next": "Następna",
+    "pageOf": "{{page}} / {{pages}}"
   }
 }

@@ -12,6 +12,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { paginateItems, TablePagination } from '@/components/ui/pagination';
 import { useAuth } from '@/context/AuthContext';
 
 const DEFAULT_SAMPLE_YAML = `id: custom-agh-portal
@@ -44,6 +45,8 @@ export function SignaturesView() {
     JSON.stringify({ schema_version: '1.0', dry_run: false, items: [DEFAULT_SAMPLE_YAML] }, null, 2),
   );
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(10);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const signaturesQuery = useQuery({
@@ -198,6 +201,7 @@ export function SignaturesView() {
   const canManage = hasPermission('manage_custom_signatures');
   const canSync = hasPermission('sync_fingerprint_hub');
   const canImport = hasPermission('import_data') && canManage;
+  const pagedRules = paginateItems(signaturesQuery.data?.items ?? [], page, perPage);
 
   const handleCreate = (e: FormEvent) => {
     e.preventDefault();
@@ -245,12 +249,16 @@ export function SignaturesView() {
           <input
             type="text"
             value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
+            onChange={(e) => {
+              setSearchText(e.target.value);
+              setPage(1);
+            }}
             placeholder={t('signatures.searchPlaceholder')}
             className="w-full max-w-md rounded-md border border-border bg-background px-3 py-2 text-sm"
           />
 
           <div className="grid gap-6 lg:grid-cols-2">
+            <div className="space-y-3">
             <div className="overflow-x-auto rounded-md border border-border">
               <table className="w-full text-left text-xs">
                 <thead className="border-b border-border bg-secondary/40 uppercase text-muted-foreground">
@@ -262,8 +270,8 @@ export function SignaturesView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {signaturesQuery.data?.items.length ? (
-                    signaturesQuery.data.items.map((rule) => (
+                  {pagedRules.items.length ? (
+                    pagedRules.items.map((rule) => (
                       <tr
                         key={rule.id}
                         onClick={() => {
@@ -320,6 +328,17 @@ export function SignaturesView() {
                   )}
                 </tbody>
               </table>
+            </div>
+            <TablePagination
+              page={pagedRules.safePage}
+              perPage={perPage}
+              totalItems={pagedRules.totalItems}
+              onPageChange={setPage}
+              onPerPageChange={(n) => {
+                setPerPage(n);
+                setPage(1);
+              }}
+            />
             </div>
 
             <form onSubmit={handleCreate} className="space-y-3">

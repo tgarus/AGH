@@ -7,6 +7,7 @@ import { apiClient, formatApiError, type Role } from '@/api/client';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { paginateItems, TablePagination } from '@/components/ui/pagination';
 import { useAuth } from '@/context/AuthContext';
 
 export function AdminView() {
@@ -25,6 +26,12 @@ export function AdminView() {
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [issuedToken, setIssuedToken] = useState<string | null>(null);
+  const [usersPage, setUsersPage] = useState(1);
+  const [usersPerPage, setUsersPerPage] = useState(10);
+  const [workersPage, setWorkersPage] = useState(1);
+  const [workersPerPage, setWorkersPerPage] = useState(10);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPerPage, setAuditPerPage] = useState(10);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const canManageUsers = hasPermission('manage_users_and_audit');
@@ -89,7 +96,7 @@ export function AdminView() {
     enabled: canManageUsers,
     queryFn: async () => {
       const { data, error } = await apiClient.GET('/api/v1/audit-logs', {
-        params: { query: { page: 1, per_page: 20 } },
+        params: { query: { page: 1, per_page: 100 } },
       });
       if (error || !data) {
         throw new Error(formatApiError(error, 'Failed to load audit logs.'));
@@ -97,6 +104,13 @@ export function AdminView() {
       return data;
     },
   });
+
+  const adminUserIds = (directoryUsersQuery.data ?? [])
+    .filter((u) => u.role === 'Admin')
+    .map((u) => u.id);
+  const pagedUsers = paginateItems(usersQuery.data?.items ?? [], usersPage, usersPerPage);
+  const pagedWorkers = paginateItems(workersQuery.data?.items ?? [], workersPage, workersPerPage);
+  const pagedAudit = paginateItems(auditQuery.data?.items ?? [], auditPage, auditPerPage);
 
   const createUserMutation = useMutation({
     mutationFn: async () => {
@@ -151,7 +165,10 @@ export function AdminView() {
           max_concurrency: 2,
           visibility_scope: visibilityScope,
           allowed_asset_group_ids: visibilityScope === 'restricted' ? selectedGroupIds : [],
-          allowed_user_ids: visibilityScope === 'restricted' ? selectedUserIds : [],
+          allowed_user_ids:
+            visibilityScope === 'restricted'
+              ? Array.from(new Set([...selectedUserIds, ...adminUserIds]))
+              : [],
         },
       });
       if (error || !data) {
@@ -267,7 +284,7 @@ export function AdminView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {usersQuery.data?.items.map((u) => (
+                  {pagedUsers.items.map((u) => (
                     <tr key={u.id} className="border-b border-border/60 last:border-0">
                       <td className="px-3 py-2 font-medium">{u.username}</td>
                       <td className="px-3 py-2 text-muted-foreground">{u.email}</td>
@@ -295,6 +312,16 @@ export function AdminView() {
                 </tbody>
               </table>
             </div>
+            <TablePagination
+              page={pagedUsers.safePage}
+              perPage={usersPerPage}
+              totalItems={pagedUsers.totalItems}
+              onPageChange={setUsersPage}
+              onPerPageChange={(n) => {
+                setUsersPerPage(n);
+                setUsersPage(1);
+              }}
+            />
           </CardContent>
         </Card>
       ) : null}
@@ -375,22 +402,29 @@ export function AdminView() {
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {(directoryUsersQuery.data ?? []).map((u) => {
-                        const checked = selectedUserIds.includes(u.id);
+                        const isAdmin = u.role === 'Admin';
+                        const checked = isAdmin || selectedUserIds.includes(u.id);
                         return (
                           <label
                             key={u.id}
-                            className="flex cursor-pointer items-center gap-1.5 rounded border border-border px-2 py-1 hover:bg-secondary/50"
+                            className={
+                              isAdmin
+                                ? 'flex cursor-not-allowed items-center gap-1.5 rounded border border-primary bg-primary/50 px-2 py-1 text-foreground'
+                                : 'flex cursor-pointer items-center gap-1.5 rounded border border-border px-2 py-1 hover:bg-secondary/50'
+                            }
                           >
                             <input
                               type="checkbox"
                               checked={checked}
-                              onChange={(e) =>
+                              disabled={isAdmin}
+                              onChange={(e) => {
+                                if (isAdmin) return;
                                 setSelectedUserIds((prev) =>
                                   e.target.checked
                                     ? [...prev, u.id]
                                     : prev.filter((id) => id !== u.id),
-                                )
-                              }
+                                );
+                              }}
                             />
                             <span>
                               {u.username} ({u.role})
@@ -433,8 +467,8 @@ export function AdminView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {workersQuery.data?.items.length ? (
-                    workersQuery.data.items.map((w) => (
+                  {pagedWorkers.items.length ? (
+                    pagedWorkers.items.map((w) => (
                       <tr key={w.id} className="border-b border-border/60 last:border-0">
                         <td className="px-3 py-2 font-medium">{w.name}</td>
                         <td className="px-3 py-2 text-muted-foreground">{w.segment_tag ?? '—'}</td>
@@ -479,6 +513,16 @@ export function AdminView() {
                 </tbody>
               </table>
             </div>
+            <TablePagination
+              page={pagedWorkers.safePage}
+              perPage={workersPerPage}
+              totalItems={pagedWorkers.totalItems}
+              onPageChange={setWorkersPage}
+              onPerPageChange={(n) => {
+                setWorkersPerPage(n);
+                setWorkersPage(1);
+              }}
+            />
           </CardContent>
         </Card>
       ) : null}
@@ -489,7 +533,7 @@ export function AdminView() {
             <CardTitle>{t('admin.auditTitle')}</CardTitle>
             <CardDescription>{t('admin.auditSubtitle')}</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             <div className="overflow-x-auto rounded-md border border-border">
               <table className="w-full text-left text-xs">
                 <thead className="border-b border-border bg-secondary/40 uppercase text-muted-foreground">
@@ -501,7 +545,7 @@ export function AdminView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {auditQuery.data?.items.map((entry) => (
+                  {pagedAudit.items.map((entry) => (
                     <tr key={entry.id} className="border-b border-border/60 last:border-0">
                       <td className="px-3 py-2 font-mono">{entry.created_at}</td>
                       <td className="px-3 py-2">{entry.actor_type}</td>
@@ -512,6 +556,16 @@ export function AdminView() {
                 </tbody>
               </table>
             </div>
+            <TablePagination
+              page={pagedAudit.safePage}
+              perPage={auditPerPage}
+              totalItems={pagedAudit.totalItems}
+              onPageChange={setAuditPage}
+              onPerPageChange={(n) => {
+                setAuditPerPage(n);
+                setAuditPage(1);
+              }}
+            />
           </CardContent>
         </Card>
       ) : null}

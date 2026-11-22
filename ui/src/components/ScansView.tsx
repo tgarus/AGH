@@ -28,6 +28,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { paginateItems, TablePagination } from '@/components/ui/pagination';
 import { useAuth } from '@/context/AuthContext';
 import { formatBullet } from '@/utils/formatBullet';
 
@@ -101,6 +102,10 @@ export function ScansView() {
   const [quickRatePps, setQuickRatePps] = useState('');
   const [quickFeedback, setQuickFeedback] = useState<QuickScanResponse | null>(null);
   const quickFileRef = useRef<HTMLInputElement>(null);
+  const [recurringPage, setRecurringPage] = useState(1);
+  const [recurringPerPage, setRecurringPerPage] = useState(10);
+  const [scansPage, setScansPage] = useState(1);
+  const [scansPerPage, setScansPerPage] = useState(10);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const groupsQuery = useQuery({
@@ -130,7 +135,13 @@ export function ScansView() {
     refetchInterval: 4000,
   });
 
-  const activeGroupId = selectedGroupId || groupsQuery.data?.items[0]?.id || '';
+  const accessibleGroups = groupsQuery.data?.items ?? [];
+  const activeGroupId = accessibleGroups.some((g) => g.id === selectedGroupId)
+    ? selectedGroupId
+    : accessibleGroups[0]?.id ?? '';
+  const effectiveQuickGroupId = accessibleGroups.some((g) => g.id === quickGroupId)
+    ? quickGroupId
+    : '';
 
   const ignoredTargetsQuery = useQuery({
     queryKey: ['ignored-targets'],
@@ -342,8 +353,8 @@ export function ScansView() {
       const { data, error } = await apiClient.POST('/api/v1/scans/quick', {
         body: {
           targets_raw: quickTargetsRaw,
-          asset_group_id: quickGroupId || null,
-          group_name: !quickGroupId && quickGroupName.trim() ? quickGroupName.trim() : null,
+          asset_group_id: effectiveQuickGroupId || null,
+          group_name: !effectiveQuickGroupId && quickGroupName.trim() ? quickGroupName.trim() : null,
           port_spec: quickPortSpec.trim() || null,
           rate_pps: rateNum && Number.isFinite(rateNum) && rateNum > 0 ? rateNum : null,
         },
@@ -368,6 +379,8 @@ export function ScansView() {
   const canControlScans = hasPermission('run_or_stop_scans');
   const canQuickScan = canControlScans && hasPermission('manage_asset_groups');
   const quickCounts = countQuickTargets(quickTargetsRaw);
+  const pagedRecurring = paginateItems(recurringQuery.data ?? [], recurringPage, recurringPerPage);
+  const pagedScans = paginateItems(scansQuery.data?.items ?? [], scansPage, scansPerPage);
   const editingSchedule =
     (recurringQuery.data ?? []).find((item) => item.id === editingScheduleId) ?? null;
   const editingApplicableIgnored = editingSchedule
@@ -453,7 +466,7 @@ export function ScansView() {
 
             <div className="grid gap-2 sm:grid-cols-4">
               <select
-                value={quickGroupId}
+                value={effectiveQuickGroupId}
                 onChange={(e) => setQuickGroupId(e.target.value)}
                 className="rounded-md border border-border bg-background px-3 py-2 text-sm"
               >
@@ -464,7 +477,7 @@ export function ScansView() {
                   </option>
                 ))}
               </select>
-              {!quickGroupId ? (
+              {!effectiveQuickGroupId ? (
                 <input
                   type="text"
                   value={quickGroupName}
@@ -771,8 +784,8 @@ export function ScansView() {
                 </tr>
               </thead>
               <tbody>
-                {recurringQuery.data?.length ? (
-                  recurringQuery.data.map((sched) => {
+                {pagedRecurring.items.length ? (
+                  pagedRecurring.items.map((sched) => {
                     const freqLabel =
                       sched.interval_unit === 'minutes'
                         ? t('scans.recurringEveryMinutes', { value: sched.interval_value })
@@ -854,6 +867,16 @@ export function ScansView() {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            page={pagedRecurring.safePage}
+            perPage={recurringPerPage}
+            totalItems={pagedRecurring.totalItems}
+            onPageChange={setRecurringPage}
+            onPerPageChange={(n) => {
+              setRecurringPerPage(n);
+              setRecurringPage(1);
+            }}
+          />
 
           {editingSchedule && canControlScans ? (
             <div className="space-y-3 rounded-md border border-primary/50 bg-secondary/25 p-4 text-xs">
@@ -997,7 +1020,7 @@ export function ScansView() {
             </Button>
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="overflow-x-auto rounded-md border border-border">
             <table className="w-full text-left text-sm">
               <thead className="border-b border-border bg-secondary/40 text-xs uppercase text-muted-foreground">
@@ -1010,8 +1033,8 @@ export function ScansView() {
                 </tr>
               </thead>
               <tbody>
-                {scansQuery.data?.items.length ? (
-                  scansQuery.data.items.map((run) => {
+                {pagedScans.items.length ? (
+                  pagedScans.items.map((run) => {
                     const pct =
                       run.total_chunks > 0
                         ? Math.round((run.completed_chunks / run.total_chunks) * 100)
@@ -1102,6 +1125,16 @@ export function ScansView() {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            page={pagedScans.safePage}
+            perPage={scansPerPage}
+            totalItems={pagedScans.totalItems}
+            onPageChange={setScansPage}
+            onPerPageChange={(n) => {
+              setScansPerPage(n);
+              setScansPage(1);
+            }}
+          />
         </CardContent>
       </Card>
 

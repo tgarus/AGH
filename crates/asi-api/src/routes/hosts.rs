@@ -9,7 +9,7 @@ use asi_common::inventory::{
     WebObservationDto,
 };
 use asi_common::pagination::{PaginatedResponse, PaginationMeta, PaginationQuery};
-use asi_common::rbac::Permission;
+use asi_common::rbac::{Permission, Role};
 use asi_common::worker::WebCookieMeta;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -197,6 +197,7 @@ pub async fn list_hosts(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| format!("%{s}%"));
+    let is_admin = auth.user.role == Role::Admin;
 
     let total: i64 = sqlx::query_scalar(
         r#"
@@ -207,6 +208,11 @@ pub async fn list_hosts(
           AND ($2::text IS NULL OR h.status = $2)
           AND ($3::bool IS NULL OR h.is_unstable = $3)
           AND ($4::bool IS NULL OR h.is_probable_tarpit = $4)
+          AND (
+              $6::bool
+              OR NOT EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = h.asset_group_id)
+              OR EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = h.asset_group_id AND m.user_id = $7)
+          )
           AND (
               $5::text IS NULL
               OR h.ip_addr::text ILIKE $5
@@ -244,6 +250,8 @@ pub async fn list_hosts(
     .bind(filter.is_unstable)
     .bind(filter.is_probable_tarpit)
     .bind(&search_pattern)
+    .bind(is_admin)
+    .bind(auth.user.id)
     .fetch_one(pool)
     .await
     .map_err(|err| map_db_err(err, "hosts count failed", auth.request_id, instance))?;
@@ -262,6 +270,11 @@ pub async fn list_hosts(
           AND ($2::text IS NULL OR h.status = $2)
           AND ($3::bool IS NULL OR h.is_unstable = $3)
           AND ($4::bool IS NULL OR h.is_probable_tarpit = $4)
+          AND (
+              $6::bool
+              OR NOT EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = h.asset_group_id)
+              OR EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = h.asset_group_id AND m.user_id = $7)
+          )
           AND (
               $5::text IS NULL
               OR h.ip_addr::text ILIKE $5
@@ -293,7 +306,7 @@ pub async fn list_hosts(
               )
           )
         ORDER BY h.last_scanned_at DESC NULLS LAST, h.ip_addr ASC
-        LIMIT $6 OFFSET $7
+        LIMIT $8 OFFSET $9
         "#,
     )
     .bind(filter.asset_group_id)
@@ -301,6 +314,8 @@ pub async fn list_hosts(
     .bind(filter.is_unstable)
     .bind(filter.is_probable_tarpit)
     .bind(&search_pattern)
+    .bind(is_admin)
+    .bind(auth.user.id)
     .bind(i64::from(pg.per_page))
     .bind(i64::try_from(pg.offset).unwrap_or(i64::MAX))
     .fetch_all(pool)

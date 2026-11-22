@@ -5,7 +5,7 @@ use asi_common::diff::{BulletItem, DiffEventKind, DiffSeverity};
 use asi_common::error::{DomainError, FieldViolation, ProblemDetails};
 use asi_common::inventory::DiffEventDto;
 use asi_common::pagination::{PaginatedResponse, PaginationMeta, PaginationQuery};
-use asi_common::rbac::Permission;
+use asi_common::rbac::{Permission, Role};
 use asi_common::scans::{
     ChunkStatus, PreflightRequest, PreflightResponse, QuickScanRequest, QuickScanResponse,
     RecurringScanScheduleDto, ScanChunkDetailDto, ScanChunkDto, ScanExplorationDto,
@@ -30,7 +30,7 @@ use crate::error::AppError;
 use crate::orchestrator::slicer::{
     compute_preflight, slice_targets, IgnoredEntry, SlicePlan, TargetEntry,
 };
-use crate::routes::common::{extract_source_ip, map_db_err, require_db};
+use crate::routes::common::{ensure_user_group_access, extract_source_ip, map_db_err, require_db};
 use crate::routes::policies::ScanPolicyRow;
 use crate::security::auth_extractor::AuthenticatedUser;
 
@@ -343,6 +343,7 @@ pub async fn preflight_scan(
     let instance = "/api/v1/scans/preflight";
     auth.require(Permission::ViewInventoryAndDiffs, instance)?;
     let pool = require_db(&state, auth.request_id, instance)?;
+    ensure_user_group_access(pool, &auth, payload.asset_group_id, instance).await?;
 
     let ctx = load_group_slice_context(
         pool,
@@ -386,28 +387,47 @@ pub async fn list_scans(
         ..Default::default()
     }
     .sanitized();
+    let is_admin = auth.user.role == Role::Admin;
 
     let total: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM scan_runs WHERE ($1::uuid IS NULL OR asset_group_id = $1)",
+        r#"
+        SELECT COUNT(*)
+        FROM scan_runs sr
+        WHERE ($1::uuid IS NULL OR sr.asset_group_id = $1)
+          AND (
+              $2::bool
+              OR NOT EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = sr.asset_group_id)
+              OR EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = sr.asset_group_id AND m.user_id = $3)
+          )
+        "#,
     )
     .bind(filter.asset_group_id)
+    .bind(is_admin)
+    .bind(auth.user.id)
     .fetch_one(pool)
     .await
     .map_err(|err| map_db_err(err, "scan count failed", auth.request_id, instance))?;
 
     let rows: Vec<ScanRunRow> = sqlx::query_as(
         r#"
-        SELECT id, asset_group_id, policy_snapshot, trigger_type, time_slot, status,
-               total_targets, total_chunks, completed_chunks, ema_chunk_ms, estimated_finish_at,
-               started_by, started_at, finished_at, cancel_requested_at,
-               include_all_ignored, overridden_ignored_values
-        FROM scan_runs
-        WHERE ($1::uuid IS NULL OR asset_group_id = $1)
-        ORDER BY started_at DESC
-        LIMIT $2 OFFSET $3
+        SELECT sr.id, sr.asset_group_id, sr.policy_snapshot, sr.trigger_type, sr.time_slot, sr.status,
+               sr.total_targets, sr.total_chunks, sr.completed_chunks, sr.ema_chunk_ms, sr.estimated_finish_at,
+               sr.started_by, sr.started_at, sr.finished_at, sr.cancel_requested_at,
+               sr.include_all_ignored, sr.overridden_ignored_values
+        FROM scan_runs sr
+        WHERE ($1::uuid IS NULL OR sr.asset_group_id = $1)
+          AND (
+              $2::bool
+              OR NOT EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = sr.asset_group_id)
+              OR EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = sr.asset_group_id AND m.user_id = $3)
+          )
+        ORDER BY sr.started_at DESC
+        LIMIT $4 OFFSET $5
         "#,
     )
     .bind(filter.asset_group_id)
+    .bind(is_admin)
+    .bind(auth.user.id)
     .bind(i64::from(pg.per_page))
     .bind(i64::try_from(pg.offset).unwrap_or(i64::MAX))
     .fetch_all(pool)
@@ -632,6 +652,7 @@ pub async fn start_scan(
     let instance = "/api/v1/scans";
     auth.require(Permission::RunOrStopScans, instance)?;
     let pool = require_db(&state, auth.request_id, instance)?;
+    ensure_user_group_access(pool, &auth, payload.asset_group_id, instance).await?;
     let source_ip = extract_source_ip(&headers);
 
     let recurring_params = if payload.recurring_enabled {
@@ -1285,6 +1306,9 @@ pub async fn quick_scan(
     auth.require(Permission::RunOrStopScans, instance)?;
     auth.require(Permission::ManageAssetGroups, instance)?;
     let pool = require_db(&state, auth.request_id, instance)?;
+    if let Some(gid) = payload.asset_group_id {
+        ensure_user_group_access(pool, &auth, gid, instance).await?;
+    }
     let source_ip = extract_source_ip(&headers);
 
     let targets = parse_raw_targets_blob(&payload.targets_raw).map_err(|violations| {
@@ -1561,6 +1585,69 @@ struct ExploreSampleRow {
 }
 
 #[derive(FromRow)]
+struct ExploreDiffHistoryRow {
+    host_id: Uuid,
+    scan_run_id: Option<Uuid>,
+    previous_snapshot: Option<serde_json::Value>,
+    current_snapshot: Option<serde_json::Value>,
+    detected_at: DateTime<Utc>,
+}
+
+fn extract_ports_from_snapshot(snap: &Option<serde_json::Value>) -> Option<Vec<i32>> {
+    let ports_arr = snap.as_ref()?.get("ports")?.as_array()?;
+    let mut ports: Vec<i32> = ports_arr
+        .iter()
+        .filter_map(|p| {
+            let state = p.get("state").and_then(|s| s.as_str());
+            if state == Some("closed") {
+                return None;
+            }
+            p.get("port")
+                .and_then(|v| v.as_i64())
+                .and_then(|v| i32::try_from(v).ok())
+        })
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    Some(ports)
+}
+
+fn resolve_sample_ports_for_scan(
+    scan_id: Uuid,
+    sample_time: DateTime<Utc>,
+    history: &[ExploreDiffHistoryRow],
+    fallback_ports: Vec<i32>,
+) -> Vec<i32> {
+    if let Some(ports) = history
+        .iter()
+        .rev()
+        .filter(|d| d.scan_run_id == Some(scan_id))
+        .find_map(|d| extract_ports_from_snapshot(&d.current_snapshot))
+    {
+        return ports;
+    }
+
+    if let Some(ports) = history
+        .iter()
+        .filter(|d| d.scan_run_id != Some(scan_id) && d.detected_at > sample_time)
+        .find_map(|d| extract_ports_from_snapshot(&d.previous_snapshot))
+    {
+        return ports;
+    }
+
+    if let Some(ports) = history
+        .iter()
+        .rev()
+        .filter(|d| d.detected_at <= sample_time)
+        .find_map(|d| extract_ports_from_snapshot(&d.current_snapshot))
+    {
+        return ports;
+    }
+
+    fallback_ports
+}
+
+#[derive(FromRow)]
 struct ExploreAuditRow {
     id: Uuid,
     actor_type: String,
@@ -1619,6 +1706,7 @@ pub async fn explore_scan(
     };
 
     let scan = scan_row.into_dto(auth.request_id, &instance)?;
+    ensure_user_group_access(pool, &auth, scan.asset_group_id, &instance).await?;
 
     let asset_group_name: String =
         sqlx::query_scalar("SELECT name FROM asset_groups WHERE id = $1")
@@ -1684,7 +1772,7 @@ pub async fn explore_scan(
 
     let diff_rows: Vec<ExploreDiffRow> = sqlx::query_as(
         r#"
-        SELECT de.id, de.host_id, de.asset_group_id, h.ip_addr, de.scan_run_id,
+        SELECT de.id, de.host_id, h.asset_group_id, h.ip_addr, de.scan_run_id,
                de.event_kind, de.severity, de.bullet_items,
                de.previous_snapshot, de.current_snapshot,
                de.acknowledged_by, de.acknowledged_at, de.detected_at
@@ -1745,6 +1833,8 @@ pub async fn explore_scan(
     let host_ids: Vec<Uuid> = sample_rows.iter().map(|s| s.host_id).collect();
     let mut ports_by_host: std::collections::HashMap<Uuid, Vec<i32>> =
         std::collections::HashMap::new();
+    let mut diff_history_by_host: std::collections::HashMap<Uuid, Vec<ExploreDiffHistoryRow>> =
+        std::collections::HashMap::new();
     if !host_ids.is_empty() {
         let port_rows: Vec<(Uuid, i32)> = sqlx::query_as(
             "SELECT host_id, port FROM host_ports WHERE host_id = ANY($1) AND state = 'active' ORDER BY port ASC",
@@ -1756,12 +1846,51 @@ pub async fn explore_scan(
         for (hid, port) in port_rows {
             ports_by_host.entry(hid).or_default().push(port);
         }
+
+        let hist_rows: Vec<ExploreDiffHistoryRow> = sqlx::query_as(
+            r#"
+            SELECT host_id, scan_run_id, previous_snapshot, current_snapshot, detected_at
+            FROM diff_events
+            WHERE host_id = ANY($1)
+            ORDER BY detected_at ASC
+            "#,
+        )
+        .bind(&host_ids)
+        .fetch_all(pool)
+        .await
+        .map_err(|err| {
+            map_db_err(
+                err,
+                "explore diff history failed",
+                auth.request_id,
+                &instance,
+            )
+        })?;
+        for hrow in hist_rows {
+            diff_history_by_host
+                .entry(hrow.host_id)
+                .or_default()
+                .push(hrow);
+        }
     }
 
     let host_samples = sample_rows
         .into_iter()
         .map(|s| {
-            let open_ports = ports_by_host.remove(&s.host_id).unwrap_or_default();
+            let open_ports = if !s.is_alive {
+                Vec::new()
+            } else {
+                let history = diff_history_by_host
+                    .get(&s.host_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                resolve_sample_ports_for_scan(
+                    id,
+                    s.sampled_at,
+                    history,
+                    ports_by_host.remove(&s.host_id).unwrap_or_default(),
+                )
+            };
             ScanHostSampleDto {
                 host_id: s.host_id,
                 ip_address: s.ip_addr.ip().to_string(),
@@ -1949,6 +2078,7 @@ pub async fn list_recurring_scans(
     let instance = "/api/v1/scans/recurring";
     auth.require(Permission::ViewInventoryAndDiffs, instance)?;
     let pool = require_db(&state, auth.request_id, instance)?;
+    let is_admin = auth.user.role == Role::Admin;
 
     let rows: Vec<RecurringScanRow> = sqlx::query_as(
         r#"
@@ -1959,9 +2089,14 @@ pub async fn list_recurring_scans(
                r.created_by, r.created_at, r.updated_at
         FROM recurring_scan_schedules r
         INNER JOIN asset_groups ag ON ag.id = r.asset_group_id
+        WHERE $1::bool
+           OR NOT EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = r.asset_group_id)
+           OR EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = r.asset_group_id AND m.user_id = $2)
         ORDER BY r.next_run_at ASC, r.created_at DESC
         "#,
     )
+    .bind(is_admin)
+    .bind(auth.user.id)
     .fetch_all(pool)
     .await
     .map_err(|err| {
@@ -2036,6 +2171,7 @@ pub async fn update_recurring_scan(
             Some(instance),
         ));
     };
+    ensure_user_group_access(pool, &auth, existing.asset_group_id, &instance).await?;
 
     let interval_value = payload.interval_value.unwrap_or(existing.interval_value);
     let interval_unit = payload
@@ -2173,6 +2309,17 @@ pub async fn delete_recurring_scan(
     let pool = require_db(&state, auth.request_id, &instance)?;
     let source_ip = extract_source_ip(&headers);
 
+    if let Some(group_id) = sqlx::query_scalar::<_, Uuid>(
+        "SELECT asset_group_id FROM recurring_scan_schedules WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| map_db_err(err, "recurring lookup failed", auth.request_id, &instance))?
+    {
+        ensure_user_group_access(pool, &auth, group_id, &instance).await?;
+    }
+
     let res = sqlx::query("DELETE FROM recurring_scan_schedules WHERE id = $1")
         .bind(id)
         .execute(pool)
@@ -2252,6 +2399,7 @@ pub async fn trigger_recurring_scan_now(
             Some(instance),
         ));
     };
+    ensure_user_group_access(pool, &auth, schedule.asset_group_id, &instance).await?;
 
     let dto = enqueue_scan_run_for_group(EnqueueScanParams {
         state: &state,

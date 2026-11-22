@@ -2,7 +2,7 @@ use asi_common::diff::{BulletItem, DiffEventKind, DiffSeverity};
 use asi_common::error::{DomainError, ProblemDetails};
 use asi_common::inventory::DiffEventDto;
 use asi_common::pagination::{PaginatedResponse, PaginationMeta, PaginationQuery};
-use asi_common::rbac::Permission;
+use asi_common::rbac::{Permission, Role};
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -116,6 +116,7 @@ pub async fn list_diffs(
 
     let kind_filter = filter.event_kind.map(|k| k.as_db_str().to_string());
     let sev_filter = filter.severity.map(|s| s.as_db_str().to_string());
+    let is_admin = auth.user.role == Role::Admin;
 
     let total: i64 = sqlx::query_scalar(
         r#"
@@ -131,6 +132,11 @@ pub async fn list_diffs(
               OR ($5 = TRUE AND de.acknowledged_at IS NOT NULL)
               OR ($5 = FALSE AND de.acknowledged_at IS NULL)
           )
+          AND (
+              $6::bool
+              OR NOT EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = h.asset_group_id)
+              OR EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = h.asset_group_id AND m.user_id = $7)
+          )
         "#,
     )
     .bind(filter.asset_group_id)
@@ -138,6 +144,8 @@ pub async fn list_diffs(
     .bind(&kind_filter)
     .bind(&sev_filter)
     .bind(filter.acknowledged)
+    .bind(is_admin)
+    .bind(auth.user.id)
     .fetch_one(pool)
     .await
     .map_err(|err| map_db_err(err, "diffs count failed", auth.request_id, instance))?;
@@ -159,8 +167,13 @@ pub async fn list_diffs(
               OR ($5 = TRUE AND de.acknowledged_at IS NOT NULL)
               OR ($5 = FALSE AND de.acknowledged_at IS NULL)
           )
+          AND (
+              $6::bool
+              OR NOT EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = h.asset_group_id)
+              OR EXISTS (SELECT 1 FROM asset_group_members m WHERE m.asset_group_id = h.asset_group_id AND m.user_id = $7)
+          )
         ORDER BY de.detected_at DESC
-        LIMIT $6 OFFSET $7
+        LIMIT $8 OFFSET $9
         "#,
     )
     .bind(filter.asset_group_id)
@@ -168,6 +181,8 @@ pub async fn list_diffs(
     .bind(&kind_filter)
     .bind(&sev_filter)
     .bind(filter.acknowledged)
+    .bind(is_admin)
+    .bind(auth.user.id)
     .bind(i64::from(pg.per_page))
     .bind(i64::try_from(pg.offset).unwrap_or(i64::MAX))
     .fetch_all(pool)

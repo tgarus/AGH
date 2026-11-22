@@ -12,6 +12,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { paginateItems, TablePagination } from '@/components/ui/pagination';
 import { useAuth } from '@/context/AuthContext';
 
 const WEBHOOK_EVENTS = [
@@ -53,13 +54,17 @@ export function NotificationsView() {
     '{\n  "severity": "high",\n  "message": "Manual incident escalation from ASI"\n}',
   );
   const [testFeedback, setTestFeedback] = useState<string | null>(null);
+  const [channelsPage, setChannelsPage] = useState(1);
+  const [channelsPerPage, setChannelsPerPage] = useState(10);
+  const [deliveriesPage, setDeliveriesPage] = useState(1);
+  const [deliveriesPerPage, setDeliveriesPerPage] = useState(10);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const channelsQuery = useQuery({
     queryKey: ['notification-channels'],
     queryFn: async () => {
       const { data, error } = await apiClient.GET('/api/v1/notifications/channels', {
-        params: { query: { page: 1, per_page: 50 } },
+        params: { query: { page: 1, per_page: 100 } },
       });
       if (error || !data) {
         throw new Error(formatApiError(error, 'Failed to load notification channels.'));
@@ -72,7 +77,7 @@ export function NotificationsView() {
     queryKey: ['notification-deliveries'],
     queryFn: async () => {
       const { data, error } = await apiClient.GET('/api/v1/notifications/deliveries', {
-        params: { query: { page: 1, per_page: 50 } },
+        params: { query: { page: 1, per_page: 100 } },
       });
       if (error || !data) {
         throw new Error(formatApiError(error, 'Failed to load deliveries.'));
@@ -80,6 +85,17 @@ export function NotificationsView() {
       return data;
     },
   });
+
+  const pagedChannels = paginateItems(
+    channelsQuery.data?.items ?? [],
+    channelsPage,
+    channelsPerPage,
+  );
+  const pagedDeliveries = paginateItems(
+    deliveriesQuery.data?.items ?? [],
+    deliveriesPage,
+    deliveriesPerPage,
+  );
 
   const parseJsonObjectField = (raw: string, fieldLabel: string): Record<string, unknown> | undefined => {
     const trimmed = raw.trim();
@@ -451,8 +467,8 @@ export function NotificationsView() {
                 </tr>
               </thead>
               <tbody>
-                {channelsQuery.data?.items.length ? (
-                  channelsQuery.data.items.map((ch) => (
+                {pagedChannels.items.length ? (
+                  pagedChannels.items.map((ch) => (
                     <tr key={ch.id} className="border-b border-border/60 last:border-0">
                       <td className="px-3 py-2">
                         <div className="font-semibold">{ch.name}</div>
@@ -529,6 +545,16 @@ export function NotificationsView() {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            page={pagedChannels.safePage}
+            perPage={channelsPerPage}
+            totalItems={pagedChannels.totalItems}
+            onPageChange={setChannelsPage}
+            onPerPageChange={(n) => {
+              setChannelsPerPage(n);
+              setChannelsPage(1);
+            }}
+          />
         </CardContent>
       </Card>
 
@@ -537,7 +563,7 @@ export function NotificationsView() {
           <CardTitle>{t('notifications.deliveriesTitle')}</CardTitle>
           <CardDescription>{t('notifications.deliveriesSubtitle')}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="overflow-x-auto rounded-md border border-border">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-border bg-secondary/40 uppercase text-muted-foreground">
@@ -550,8 +576,8 @@ export function NotificationsView() {
                 </tr>
               </thead>
               <tbody>
-                {deliveriesQuery.data?.items.length ? (
-                  deliveriesQuery.data.items.map((d) => (
+                {pagedDeliveries.items.length ? (
+                  pagedDeliveries.items.map((d) => (
                     <tr key={d.id} className="border-b border-border/60 last:border-0">
                       <td className="px-3 py-2 font-medium">{d.channel_name}</td>
                       <td className="px-3 py-2 font-mono text-[11px]">{d.event_type}</td>
@@ -592,6 +618,16 @@ export function NotificationsView() {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            page={pagedDeliveries.safePage}
+            perPage={deliveriesPerPage}
+            totalItems={pagedDeliveries.totalItems}
+            onPageChange={setDeliveriesPage}
+            onPerPageChange={(n) => {
+              setDeliveriesPerPage(n);
+              setDeliveriesPage(1);
+            }}
+          />
         </CardContent>
       </Card>
     </div>

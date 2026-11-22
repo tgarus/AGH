@@ -7,6 +7,7 @@ import { apiClient, formatApiError, type IgnoredTargetType } from '@/api/client'
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { paginateItems, TablePagination } from '@/components/ui/pagination';
 import { useAuth } from '@/context/AuthContext';
 
 export function IgnoredTargetsView() {
@@ -17,13 +18,15 @@ export function IgnoredTargetsView() {
   const [targetType, setTargetType] = useState<IgnoredTargetType>('ip');
   const [value, setValue] = useState('');
   const [reason, setReason] = useState('');
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(10);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const listQuery = useQuery({
     queryKey: ['ignored-targets'],
     queryFn: async () => {
       const { data, error } = await apiClient.GET('/api/v1/ignored-targets', {
-        params: { query: { page: 1, per_page: 100 } },
+        params: { query: { page: 1, per_page: 200 } },
       });
       if (error || !data) {
         throw new Error(formatApiError(error, 'Failed to load ignored targets.'));
@@ -31,6 +34,8 @@ export function IgnoredTargetsView() {
       return data;
     },
   });
+
+  const pagedItems = paginateItems(listQuery.data?.items ?? [], page, perPage);
 
   const createMutation = useMutation({
     mutationFn: async () => {
@@ -163,9 +168,9 @@ export function IgnoredTargetsView() {
                 <th className="px-3 py-2 text-right">{t('common.actions')}</th>
               </tr>
             </thead>
-            <tbody>
-              {listQuery.data?.items.length ? (
-                listQuery.data.items.map((item) => (
+              <tbody>
+              {pagedItems.items.length ? (
+                pagedItems.items.map((item) => (
                   <tr key={item.id} className="border-b border-border/60 last:border-0">
                     <td className="px-3 py-2">
                       <Badge variant="outline">{item.target_type}</Badge>
@@ -195,6 +200,16 @@ export function IgnoredTargetsView() {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          page={pagedItems.safePage}
+          perPage={perPage}
+          totalItems={pagedItems.totalItems}
+          onPageChange={setPage}
+          onPerPageChange={(n) => {
+            setPerPage(n);
+            setPage(1);
+          }}
+        />
       </CardContent>
     </Card>
   );

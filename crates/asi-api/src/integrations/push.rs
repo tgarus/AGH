@@ -182,6 +182,7 @@ pub async fn enqueue_manual_sync(
 // Push
 // ---------------------------------------------------------------------------
 
+#[derive(sqlx::FromRow)]
 struct DiffRow {
     host_id: Uuid,
     ip_addr: String,
@@ -199,32 +200,24 @@ struct DiffRow {
 }
 
 async fn load_diff_row(pool: &PgPool, diff_id: Uuid) -> Result<DiffRow, String> {
-    sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            String,
-            Option<Uuid>,
-            String,
-            String,
-            serde_json::Value,
-            serde_json::Value,
-            DateTime<Utc>,
-            Uuid,
-            String,
-            Option<String>,
-            Option<DateTime<Utc>>,
-            Option<DateTime<Utc>>,
-        ),
-    >(
+    sqlx::query_as::<_, DiffRow>(
         r#"
-        SELECT de.host_id, h.ip_addr::text, de.scan_run_id, de.event_kind, de.severity,
-               de.bullet_items, COALESCE(de.external_refs, '{}'::jsonb), de.detected_at,
-               ag.id, ag.name, ag.description,
-               sr.started_at, sr.finished_at
+        SELECT de.host_id,
+               h.ip_addr::text AS ip_addr,
+               de.scan_run_id,
+               de.event_kind,
+               de.severity,
+               de.bullet_items,
+               COALESCE(de.external_refs, '{}'::jsonb) AS external_refs,
+               de.detected_at,
+               COALESCE(ag.id, '00000000-0000-0000-0000-000000000000'::uuid) AS group_id,
+               COALESCE(ag.name, 'default') AS group_name,
+               ag.description AS group_description,
+               sr.started_at AS run_started_at,
+               sr.finished_at AS run_finished_at
         FROM diff_events de
         JOIN hosts h ON h.id = de.host_id
-        JOIN asset_groups ag ON ag.id = h.asset_group_id
+        LEFT JOIN asset_groups ag ON ag.id = h.asset_group_id
         LEFT JOIN scan_runs sr ON sr.id = de.scan_run_id
         WHERE de.id = $1
         "#,
@@ -233,37 +226,6 @@ async fn load_diff_row(pool: &PgPool, diff_id: Uuid) -> Result<DiffRow, String> 
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?
-    .map(
-        |(
-            host_id,
-            ip_addr,
-            scan_run_id,
-            event_kind,
-            severity,
-            bullet_items,
-            external_refs,
-            detected_at,
-            group_id,
-            group_name,
-            group_description,
-            run_started_at,
-            run_finished_at,
-        )| DiffRow {
-            host_id,
-            ip_addr,
-            scan_run_id,
-            event_kind,
-            severity,
-            bullet_items,
-            external_refs,
-            detected_at,
-            group_id,
-            group_name,
-            group_description,
-            run_started_at,
-            run_finished_at,
-        },
-    )
     .ok_or_else(|| format!("diff_event {diff_id} not found"))
 }
 

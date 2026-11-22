@@ -8,15 +8,22 @@ import {
   formatApiError,
   type DdFindingPayloadOverride,
   type DdFindingPreviewDto,
+  type DdFindingUpsert,
+  type DiffEventDto,
+  type HostSummaryDto,
 } from '@/api/client';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { useAuth } from '@/context/AuthContext';
 
 interface DdPayloadModalProps {
   mode: 'diff' | 'host';
   targetId: string;
   onClose: () => void;
   onPushed?: () => void;
+  fallbackDiff?: DiffEventDto;
+  fallbackHost?: HostSummaryDto;
+  fallbackGroupName?: string;
 }
 
 const SEVERITIES = ['Info', 'Low', 'Medium', 'High', 'Critical'] as const;
@@ -30,9 +37,101 @@ const SEVERITY_TO_NUM: Record<string, string> = {
   Critical: 'S4',
 };
 
-export function DdPayloadModal({ mode, targetId, onClose, onPushed }: DdPayloadModalProps) {
+function mapDiffSevToDd(sev: string): { severity: string; numerical: string } {
+  switch (sev.toLowerCase()) {
+    case 'critical':
+      return { severity: 'Critical', numerical: 'S4' };
+    case 'high':
+      return { severity: 'High', numerical: 'S3' };
+    case 'medium':
+      return { severity: 'Medium', numerical: 'S2' };
+    case 'low':
+      return { severity: 'Low', numerical: 'S1' };
+    default:
+      return { severity: 'Info', numerical: 'S0' };
+  }
+}
+
+function buildFallbackDiffPreview(diff: DiffEventDto, groupName?: string): DdFindingPreviewDto {
+  const { severity, numerical } = mapDiffSevToDd(diff.severity);
+  const effectiveGroup = groupName || diff.asset_group_id;
+  const firstBullet = diff.bullet_items[0];
+  const head = diff.event_kind === 'confirmed_change' ? 'ASI zmiana' : 'ASI wariancja';
+  const titleSuffix = firstBullet ? `${firstBullet.op} ${firstBullet.key}` : 'zmiana stanu';
+  const bulletsDesc = diff.bullet_items
+    .map((b) => `- ${b.op} ${b.key}: ${JSON.stringify(b.params)}`)
+    .join('\n');
+  const payload: DdFindingUpsert = {
+    title: `${head} [${severity}] ${diff.ip_addr}: ${titleSuffix}`.slice(0, 250),
+    description: `Wykryte przez ASI (Attack Surface Intelligence, AGH).\n\nZmiany:\n${bulletsDesc}\n\nSzczegoly w ASI: host ${diff.ip_addr} (diff ${diff.id})\n`,
+    severity,
+    date: diff.detected_at.slice(0, 10),
+    test: 0,
+    found_by: [],
+    numerical_severity: numerical,
+    unique_id_from_tool: diff.id,
+    component_name: null,
+    references: `asi://diffs/${diff.id}`,
+    tags: ['asi', effectiveGroup, diff.event_kind],
+    active: true,
+    verified: false,
+  };
+  return {
+    target_kind: 'diff_event',
+    target_id: diff.id,
+    ip_addr: diff.ip_addr,
+    asset_group_name: effectiveGroup,
+    default_payload: payload,
+    saved_override: null,
+    effective_payload: payload,
+  };
+}
+
+function buildFallbackHostPreview(host: HostSummaryDto): DdFindingPreviewDto {
+  const severity = host.is_probable_tarpit ? 'Medium' : 'Info';
+  const numerical = host.is_probable_tarpit ? 'S2' : 'S0';
+  const tags = Array.from(
+    new Set(['asi', 'inventory', host.asset_group_name, ...host.manual_tags, ...host.auto_tags]),
+  );
+  const payload: DdFindingUpsert = {
+    title: `ASI host [${severity}] ${host.ip_addr} (${host.open_port_count} portow)`.slice(0, 250),
+    description: `Host inwentarzowy ASI w grupie '${host.asset_group_name}'.\n\nIP: ${host.ip_addr}\nStatus: ${host.status}\nNiestabilny: ${host.is_unstable}\nProbable Tarpit: ${host.is_probable_tarpit}\n`,
+    severity,
+    date: new Date().toISOString().slice(0, 10),
+    test: 0,
+    found_by: [],
+    numerical_severity: numerical,
+    unique_id_from_tool: `host:${host.id}`,
+    component_name: 'ASI Inventory',
+    references: `asi://hosts/${host.id}`,
+    tags,
+    active: true,
+    verified: false,
+  };
+  return {
+    target_kind: 'host',
+    target_id: host.id,
+    ip_addr: host.ip_addr,
+    asset_group_name: host.asset_group_name,
+    default_payload: payload,
+    saved_override: null,
+    effective_payload: payload,
+  };
+}
+
+export function DdPayloadModal({
+  mode,
+  targetId,
+  onClose,
+  onPushed,
+  fallbackDiff,
+  fallbackHost,
+  fallbackGroupName,
+}: DdPayloadModalProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
+  const canPushDd = hasPermission('manage_external_integrations');
 
   const [title, setTitle] = useState('');
   const [severity, setSeverity] = useState('Medium');
@@ -52,32 +151,58 @@ export function DdPayloadModal({ mode, targetId, onClose, onPushed }: DdPayloadM
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
-  const previewQuery = useQuery<DdFindingPreviewDto>({
+  const previewQuery = useQuery<{ preview: DdFindingPreviewDto; isFallback: boolean }>({
     queryKey: ['dd-preview', mode, targetId],
     queryFn: async () => {
       if (mode === 'diff') {
-        const { data, error } = await apiClient.GET(
-          '/api/v1/integrations/defectdojo/preview/diff/{diff_event_id}',
-          { params: { path: { diff_event_id: targetId } } },
-        );
-        if (error || !data) {
+        try {
+          const { data, error } = await apiClient.GET(
+            '/api/v1/integrations/defectdojo/preview/diff/{diff_event_id}',
+            { params: { path: { diff_event_id: targetId } } },
+          );
+          if (data && !error) {
+            return { preview: data, isFallback: false };
+          }
+          if (fallbackDiff) {
+            return {
+              preview: buildFallbackDiffPreview(fallbackDiff, fallbackGroupName),
+              isFallback: true,
+            };
+          }
           throw new Error(formatApiError(error, 'Failed to load DefectDojo preview.'));
+        } catch (err) {
+          if (fallbackDiff) {
+            return {
+              preview: buildFallbackDiffPreview(fallbackDiff, fallbackGroupName),
+              isFallback: true,
+            };
+          }
+          throw err instanceof Error ? err : new Error('Failed to load DefectDojo preview.');
         }
-        return data;
       }
-      const { data, error } = await apiClient.GET(
-        '/api/v1/integrations/defectdojo/preview/host/{host_id}',
-        { params: { path: { host_id: targetId } } },
-      );
-      if (error || !data) {
+      try {
+        const { data, error } = await apiClient.GET(
+          '/api/v1/integrations/defectdojo/preview/host/{host_id}',
+          { params: { path: { host_id: targetId } } },
+        );
+        if (data && !error) {
+          return { preview: data, isFallback: false };
+        }
+        if (fallbackHost) {
+          return { preview: buildFallbackHostPreview(fallbackHost), isFallback: true };
+        }
         throw new Error(formatApiError(error, 'Failed to load DefectDojo host preview.'));
+      } catch (err) {
+        if (fallbackHost) {
+          return { preview: buildFallbackHostPreview(fallbackHost), isFallback: true };
+        }
+        throw err instanceof Error ? err : new Error('Failed to load DefectDojo host preview.');
       }
-      return data;
     },
   });
 
   useEffect(() => {
-    const data = previewQuery.data;
+    const data = previewQuery.data?.preview;
     if (!data) {
       return;
     }
@@ -168,7 +293,10 @@ export function DdPayloadModal({ mode, targetId, onClose, onPushed }: DdPayloadM
     onSuccess: (updated) => {
       setErrorMsg(null);
       setStatusMsg(t('integrations.modal.overrideSaved'));
-      queryClient.setQueryData(['dd-preview', mode, targetId], updated);
+      queryClient.setQueryData(['dd-preview', mode, targetId], {
+        preview: updated,
+        isFallback: false,
+      });
       onPushed?.();
     },
     onError: (err) => {
@@ -216,7 +344,7 @@ export function DdPayloadModal({ mode, targetId, onClose, onPushed }: DdPayloadM
   });
 
   const wirePreview = (() => {
-    const base = previewQuery.data?.effective_payload;
+    const base = previewQuery.data?.preview.effective_payload;
     if (!base) {
       return null;
     }
@@ -265,9 +393,9 @@ export function DdPayloadModal({ mode, targetId, onClose, onPushed }: DdPayloadM
             {previewQuery.data ? (
               <>
                 <Badge variant="outline" className="font-mono">
-                  {previewQuery.data.ip_addr}
+                  {previewQuery.data.preview.ip_addr}
                 </Badge>
-                <Badge variant="default">{previewQuery.data.asset_group_name}</Badge>
+                <Badge variant="default">{previewQuery.data.preview.asset_group_name}</Badge>
               </>
             ) : null}
           </div>
@@ -277,6 +405,11 @@ export function DdPayloadModal({ mode, targetId, onClose, onPushed }: DdPayloadM
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-5">
+          {previewQuery.data?.isFallback ? (
+            <div className="rounded-md border border-amber-700 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+              {t('integrations.modal.fallbackNotice')}
+            </div>
+          ) : null}
           {errorMsg ? (
             <div className="rounded-md border border-red-800 bg-red-950/40 px-3 py-2 text-xs text-red-300">
               {errorMsg}
@@ -512,14 +645,16 @@ export function DdPayloadModal({ mode, targetId, onClose, onPushed }: DdPayloadM
             <Save className="h-4 w-4" />
             {t('integrations.modal.saveOverride')}
           </Button>
-          <Button
-            size="sm"
-            onClick={() => pushMutation.mutate()}
-            disabled={pushMutation.isPending || previewQuery.isLoading}
-          >
-            <Send className="h-4 w-4" />
-            {t('integrations.modal.pushNow')}
-          </Button>
+          {canPushDd ? (
+            <Button
+              size="sm"
+              onClick={() => pushMutation.mutate()}
+              disabled={pushMutation.isPending || previewQuery.isLoading}
+            >
+              <Send className="h-4 w-4" />
+              {t('integrations.modal.pushNow')}
+            </Button>
+          ) : null}
         </div>
       </div>
     </div>

@@ -11,7 +11,6 @@ import {
   RefreshCw,
   Search,
   Server,
-  Shield,
   SlidersHorizontal,
   Users,
 } from 'lucide-react';
@@ -81,7 +80,7 @@ export default function App() {
   const [headerSearch, setHeaderSearch] = useState('');
   const [submittedSearch, setSubmittedSearch] = useState('');
   const [searchVersion, setSearchVersion] = useState(0);
-  const sseStatus = useLiveEvents(Boolean(user));
+  useLiveEvents(Boolean(user));
 
   if (isLoading) {
     return (
@@ -155,9 +154,11 @@ export default function App() {
     <div className="flex min-h-screen bg-background text-foreground">
       <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card p-3">
         <div className="mb-3 flex items-center gap-2.5 border-b border-border px-1 pb-3">
-          <div className="flex h-8 w-8 items-center justify-center border border-border bg-background text-foreground">
-            <Shield className="h-4 w-4" />
-          </div>
+          <img
+            src="/favicon.svg"
+            alt={t('app.shortName')}
+            className="h-8 w-8 shrink-0"
+          />
           <div>
             <div className="font-mono text-sm font-bold">{t('app.shortName')}</div>
             <div className="text-[11px] text-muted-foreground">{t('app.subtitle')}</div>
@@ -290,41 +291,6 @@ export default function App() {
                 {t('workspace.searchBtn')}
               </Button>
             </form>
-            <div className="hidden items-center rounded-md border border-border bg-background p-0.5 sm:flex">
-              <button
-                type="button"
-                onClick={() => selectWorkspaceMode('analyst')}
-                className={`rounded px-2 py-1 text-[11px] font-medium ${
-                  workspaceMode === 'analyst'
-                    ? 'bg-secondary text-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {t('workspace.modeAnalystShort')}
-              </button>
-              <button
-                type="button"
-                onClick={() => selectWorkspaceMode('config')}
-                className={`rounded px-2 py-1 text-[11px] font-medium ${
-                  workspaceMode === 'config'
-                    ? 'bg-secondary text-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {t('workspace.modeConfigShort')}
-              </button>
-            </div>
-            <Badge
-              variant={
-                sseStatus === 'connected'
-                  ? 'success'
-                  : sseStatus === 'reconnecting'
-                    ? 'warning'
-                    : 'outline'
-              }
-            >
-              SSE: {t(`sse.${sseStatus}`)}
-            </Badge>
           </div>
         </header>
 

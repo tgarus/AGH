@@ -568,7 +568,7 @@ pub async fn dashboard_analytics(
                ag.name AS asset_group_name,
                (SELECT COUNT(*) FROM hosts h WHERE h.asset_group_id = ag.id AND h.status = 'active') AS active_hosts,
                (SELECT COUNT(*) FROM host_ports hp INNER JOIN hosts h ON h.id = hp.host_id WHERE h.asset_group_id = ag.id AND hp.state = 'active') AS open_ports,
-               (SELECT COUNT(*) FROM diff_events de WHERE de.asset_group_id = ag.id AND de.event_kind = 'confirmed_change') AS confirmed_diffs,
+               (SELECT COUNT(*) FROM diff_events de INNER JOIN hosts h ON h.id = de.host_id WHERE h.asset_group_id = ag.id AND de.event_kind = 'confirmed_change') AS confirmed_diffs,
                (SELECT COUNT(*) FROM scan_runs sr WHERE sr.asset_group_id = ag.id) AS total_scans
         FROM asset_groups ag
         ORDER BY active_hosts DESC, ag.name ASC

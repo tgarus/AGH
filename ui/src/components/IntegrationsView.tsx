@@ -7,6 +7,7 @@ import { apiClient, formatApiError } from '@/api/client';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { paginateItems, TablePagination } from '@/components/ui/pagination';
 import { useAuth } from '@/context/AuthContext';
 
 type FindingScope = 'changes' | 'all_diffs' | 'inventory';
@@ -32,6 +33,8 @@ export function IntegrationsView() {
   const [enabled, setEnabled] = useState(false);
   const [formMsg, setFormMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [outboxPage, setOutboxPage] = useState(1);
+  const [outboxPerPage, setOutboxPerPage] = useState(10);
 
   const configQuery = useQuery({
     queryKey: ['dd-config'],
@@ -48,7 +51,7 @@ export function IntegrationsView() {
     queryKey: ['dd-outbox'],
     queryFn: async () => {
       const { data, error } = await apiClient.GET('/api/v1/integrations/defectdojo/outbox', {
-        params: { query: { page: 1, per_page: 20 } },
+        params: { query: { page: 1, per_page: 100 } },
       });
       if (error || !data) {
         throw new Error(formatApiError(error, 'Failed to load DefectDojo outbox.'));
@@ -57,6 +60,8 @@ export function IntegrationsView() {
     },
     refetchInterval: 10_000,
   });
+
+  const pagedOutbox = paginateItems(outboxQuery.data?.items ?? [], outboxPage, outboxPerPage);
 
   useEffect(() => {
     const cfg = configQuery.data;
@@ -423,10 +428,10 @@ export function IntegrationsView() {
             </div>
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="space-y-2">
-            {outboxQuery.data?.items.length ? (
-              outboxQuery.data.items.map((item) => (
+            {pagedOutbox.items.length ? (
+              pagedOutbox.items.map((item) => (
                 <div
                   key={item.id}
                   className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border bg-background/50 px-3 py-2 text-sm"
@@ -458,6 +463,16 @@ export function IntegrationsView() {
               </div>
             )}
           </div>
+          <TablePagination
+            page={pagedOutbox.safePage}
+            perPage={outboxPerPage}
+            totalItems={pagedOutbox.totalItems}
+            onPageChange={setOutboxPage}
+            onPerPageChange={(n) => {
+              setOutboxPerPage(n);
+              setOutboxPage(1);
+            }}
+          />
         </CardContent>
       </Card>
     </div>

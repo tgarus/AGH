@@ -29,7 +29,7 @@
     "modeLabel": "Workspace Mode",
     "modeAnalystShort": "Analyst",
     "modeConfigShort": "Config",
-    "modeAnalystBadge": "Analyst Mode (360° Triage)",
+    "modeAnalystBadge": "Analyst Mode",
     "modeConfigBadge": "Configuration & Orchestration Mode",
     "sectionAnalytics": "Analytics & Triage",
     "sectionConfig": "Configuration & Orchestration",
@@ -139,7 +139,17 @@
     "membersSubtitle": "Admin can assign multiple users to this group; leaving empty grants role-based access to all.",
     "saveMembers": "Save User Assignments",
     "membersSaved": "Asset group user assignments saved.",
-    "membersAllFallback": "No specific users assigned (accessible by role)."
+    "membersAllFallback": "No specific users assigned (accessible by role).",
+    "settingsTitle": "Asset Group Settings",
+    "nameLabel": "Group Name",
+    "descLabel": "Group Description",
+    "policySelectLabel": "Scan Policy",
+    "samplingEnabledLabel": "Diurnal Sampling (4 time slots)",
+    "adminAlwaysAccess": "Admin (always assigned)",
+    "unsavedChangesDetected": "Unsaved changes detected in group settings",
+    "allSettingsSaved": "All settings saved",
+    "saveAllSettings": "Save Group Settings",
+    "allSettingsSavedToast": "Group settings and user assignments saved."
   },
   "policies": {
     "title": "Scan Policies & Time Windows",
@@ -512,7 +522,8 @@
       "overrideSaved": "Payload override saved (also applied on auto-push).",
       "pushedDiffOk": "DefectDojo: {{note}}",
       "pushedOk": "Pushed to DefectDojo (finding #{{id}}).",
-      "invalidCustomFields": "Custom fields must be a valid JSON object."
+      "invalidCustomFields": "Custom fields must be a valid JSON object.",
+      "fallbackNotice": "Preview built from local event/host data."
     },
     "messages": {
       "saved": "Configuration saved.",
@@ -533,5 +544,13 @@
       "attempts": "attempts",
       "retryAt": "retry"
     }
+  },
+  "pagination": {
+    "showing": "Showing {{from}}–{{to}} of {{total}}",
+    "empty": "No items to display",
+    "perPage": "Per page:",
+    "prev": "Previous",
+    "next": "Next",
+    "pageOf": "{{page}} / {{pages}}"
   }
 }

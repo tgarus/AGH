@@ -16,6 +16,7 @@ import { DdPayloadModal } from '@/components/DdPayloadModal';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { paginateItems, TablePagination } from '@/components/ui/pagination';
 import { useAuth } from '@/context/AuthContext';
 
 function HostDdBadge({ hostId }: { hostId: string }) {
@@ -154,6 +155,8 @@ export function HostsView({
   const [quickFilter, setQuickFilter] = useState<QuickHostFilter>('all');
   const [layoutMode, setLayoutMode] = useState<'table360' | 'split'>('table360');
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(25);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   void workspaceMode;
 
@@ -280,6 +283,7 @@ export function HostsView({
   const canForceSv = hasPermission('force_tarpit_scan');
   const canExport = hasPermission('export_reports');
   const canPushDd = hasPermission('manage_external_integrations');
+  const canEditDd = canPushDd || canEditMetadata || hasPermission('acknowledge_diffs');
 
   useEffect(() => {
     setCommentText('');
@@ -382,8 +386,11 @@ export function HostsView({
     return true;
   });
 
+  const pagedHosts = paginateItems(filteredHosts, page, perPage);
+
   const applyQuickFilter = (next: QuickHostFilter) => {
     setQuickFilter(next);
+    setPage(1);
     if (next !== 'active') setStatusFilter('');
     if (next !== 'flapping') setOnlyUnstable(false);
     if (next !== 'tarpit') setOnlyTarpit(false);
@@ -404,7 +411,7 @@ export function HostsView({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {canPushDd ? (
+            {canEditDd ? (
               <Button
                 size="sm"
                 variant="outline"
@@ -806,7 +813,10 @@ export function HostsView({
             <input
               type="text"
               value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
+              onChange={(e) => {
+                setSearchText(e.target.value);
+                setPage(1);
+              }}
               placeholder={t('hosts.searchPlaceholder')}
               className="rounded-md border border-border bg-background px-3 py-2 text-sm sm:col-span-2"
             />
@@ -815,6 +825,7 @@ export function HostsView({
               onChange={(e) => {
                 setQuickFilter('all');
                 setStatusFilter(e.target.value as HostStatus | '');
+                setPage(1);
               }}
               className="rounded-md border border-border bg-background px-3 py-2 text-sm"
             >
@@ -832,6 +843,7 @@ export function HostsView({
                   onChange={(e) => {
                     setQuickFilter('all');
                     setOnlyUnstable(e.target.checked);
+                    setPage(1);
                   }}
                 />
                 <span>{t('hosts.onlyUnstable')}</span>
@@ -843,6 +855,7 @@ export function HostsView({
                   onChange={(e) => {
                     setQuickFilter('all');
                     setOnlyTarpit(e.target.checked);
+                    setPage(1);
                   }}
                 />
                 <span>{t('hosts.onlyTarpit')}</span>
@@ -851,6 +864,7 @@ export function HostsView({
           </div>
 
           {layoutMode === 'table360' ? (
+            <div className="space-y-3">
             <div className="overflow-x-auto rounded-md border border-border">
               <table className="w-full text-left text-xs">
                 <thead className="border-b border-border bg-secondary/40 uppercase text-muted-foreground">
@@ -864,8 +878,8 @@ export function HostsView({
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredHosts.length ? (
-                    filteredHosts.map((h) => {
+                  {pagedHosts.items.length ? (
+                    pagedHosts.items.map((h) => {
                       const hostServices = servicesByHost.get(h.id) ?? [];
                       const portSeen = new Set<string>();
                       const portBadges: Array<{ key: string; label: string }> = [];
@@ -1018,7 +1032,7 @@ export function HostsView({
                               >
                                 {t('hosts.inspectEditBtn')}
                               </Button>
-                              {canPushDd ? (
+                              {canEditDd ? (
                                 <Button
                                   type="button"
                                   size="sm"
@@ -1044,9 +1058,21 @@ export function HostsView({
                 </tbody>
               </table>
             </div>
+            <TablePagination
+              page={pagedHosts.safePage}
+              perPage={perPage}
+              totalItems={pagedHosts.totalItems}
+              onPageChange={setPage}
+              onPerPageChange={(n) => {
+                setPerPage(n);
+                setPage(1);
+              }}
+            />
+            </div>
           ) : (
             <div className="grid gap-6 lg:grid-cols-5">
-              <div className="overflow-x-auto rounded-md border border-border lg:col-span-2">
+              <div className="space-y-3 lg:col-span-2">
+              <div className="overflow-x-auto rounded-md border border-border">
                 <table className="w-full text-left text-sm">
                   <thead className="border-b border-border bg-secondary/40 text-xs uppercase text-muted-foreground">
                     <tr>
@@ -1056,8 +1082,8 @@ export function HostsView({
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredHosts.length ? (
-                      filteredHosts.map((h) => (
+                    {pagedHosts.items.length ? (
+                      pagedHosts.items.map((h) => (
                         <tr
                           key={h.id}
                           onClick={() => setSelectedHostId(h.id)}
@@ -1090,6 +1116,17 @@ export function HostsView({
                     )}
                   </tbody>
                 </table>
+              </div>
+              <TablePagination
+                page={pagedHosts.safePage}
+                perPage={perPage}
+                totalItems={pagedHosts.totalItems}
+                onPageChange={setPage}
+                onPerPageChange={(n) => {
+                  setPerPage(n);
+                  setPage(1);
+                }}
+              />
               </div>
 
               <div className="space-y-4 lg:col-span-3">{detailContent}</div>
@@ -1134,6 +1171,12 @@ export function HostsView({
         <DdPayloadModal
           mode="host"
           targetId={pushingHostId}
+          fallbackHost={
+            (hostsQuery.data?.items ?? []).find((h) => h.id === pushingHostId) ??
+            (detail?.host.id === pushingHostId
+              ? { ...detail.host, open_port_count: detail.ports.length }
+              : undefined)
+          }
           onClose={() => setPushingHostId(null)}
         />
       ) : null}

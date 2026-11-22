@@ -520,7 +520,7 @@ pub async fn save_diff_defectdojo_override(
     Json(payload): Json<DdFindingPayloadOverride>,
 ) -> Result<Json<DdFindingPreviewDto>, AppError> {
     let instance = format!("/api/v1/integrations/defectdojo/override/diff/{diff_event_id}");
-    auth.require(Permission::ManageExternalIntegrations, &instance)?;
+    auth.require(Permission::EditAnalyticalMetadata, &instance)?;
     let pool = require_db(&state, auth.request_id, &instance)?;
 
     if let Err(e) = save_diff_dd_override(pool, diff_event_id, &payload).await {
@@ -581,17 +581,40 @@ pub async fn push_diff_to_defectdojo(
         ));
     }
 
-    match push_single_diff(pool, &state.secret_box, diff_event_id, override_opt).await {
+    match push_single_diff(pool, &state.secret_box, diff_event_id, override_opt.clone()).await {
         Ok(finding_id) => Ok(Json(DdPushDiffResponse {
             diff_event_id,
             enqueued: true,
             note: format!("pushed to DefectDojo as finding #{finding_id}"),
         })),
-        Err(e) => Err(AppError::new(
-            DomainError::BadRequest(format!("push failed: {e}")),
-            auth.request_id,
-            Some(instance),
-        )),
+        Err(e) => {
+            if let Some(ref ov) = override_opt {
+                let _ = save_diff_dd_override(pool, diff_event_id, ov).await;
+            }
+            let _ = sqlx::query(
+                r#"
+                INSERT INTO dd_outbox (kind, asset_group_id, diff_event_id, status, last_error)
+                SELECT 'diff_event', h.asset_group_id, de.id, 'pending', $2
+                FROM diff_events de
+                INNER JOIN hosts h ON h.id = de.host_id
+                WHERE de.id = $1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dd_outbox
+                      WHERE diff_event_id = $1 AND status IN ('pending', 'processing', 'sent')
+                  )
+                "#,
+            )
+            .bind(diff_event_id)
+            .bind(&e)
+            .execute(pool)
+            .await;
+
+            Ok(Json(DdPushDiffResponse {
+                diff_event_id,
+                enqueued: true,
+                note: format!("Zapisano modyfikację i zakolejkowano w outboxie ({e})"),
+            }))
+        }
     }
 }
 
@@ -650,7 +673,7 @@ pub async fn save_host_defectdojo_override(
     Json(payload): Json<DdFindingPayloadOverride>,
 ) -> Result<Json<DdFindingPreviewDto>, AppError> {
     let instance = format!("/api/v1/integrations/defectdojo/override/host/{host_id}");
-    auth.require(Permission::ManageExternalIntegrations, &instance)?;
+    auth.require(Permission::EditAnalyticalMetadata, &instance)?;
     let pool = require_db(&state, auth.request_id, &instance)?;
 
     if let Err(e) = save_host_dd_override(pool, host_id, &payload).await {
