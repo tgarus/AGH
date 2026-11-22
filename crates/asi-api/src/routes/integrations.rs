@@ -21,10 +21,10 @@ use uuid::Uuid;
 use crate::app::AppState;
 use crate::audit::{insert_audit_log, AuditRecord};
 use crate::error::AppError;
-use crate::integrations::defectdojo::DdClient;
+use crate::integrations::defectdojo::{normalize_dd_base_url, DdClient};
 use crate::integrations::push::{
-    audit_dd, build_diff_dd_preview, build_host_dd_preview, enqueue_manual_sync, push_single_diff,
-    push_single_host, save_diff_dd_override, save_host_dd_override,
+    audit_dd, build_diff_dd_preview, build_host_dd_preview, enqueue_manual_sync, load_config,
+    push_single_diff, push_single_host, save_diff_dd_override, save_host_dd_override,
 };
 use crate::routes::common::{extract_request_id, map_db_err, require_db};
 use crate::security::auth_extractor::AuthenticatedUser;
@@ -138,20 +138,27 @@ pub async fn update_defectdojo_config(
     auth.require(Permission::ManageExternalIntegrations, instance)?;
     let pool = require_db(&state, auth.request_id, instance)?;
 
-    let base_url = payload
+    let raw_base_url = payload
         .base_url
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_default();
-    if base_url.is_empty() && payload.enabled == Some(true) {
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let normalized_base_url = match raw_base_url {
+        Some(raw) => Some(normalize_dd_base_url(raw).map_err(|e| validation(e, "base_url"))?),
+        None => None,
+    };
+    let existing_base_url: String =
+        sqlx::query_scalar("SELECT base_url FROM defectdojo_config WHERE id = TRUE")
+            .fetch_optional(pool)
+            .await
+            .map_err(|err| map_db_err(err, "dd config read failed", auth.request_id, instance))?
+            .unwrap_or_default();
+    let effective_base_url = normalized_base_url
+        .as_deref()
+        .unwrap_or(existing_base_url.as_str());
+    if effective_base_url.trim().is_empty() && payload.enabled == Some(true) {
         return Err(validation(
             "base_url is required when enabling the integration".to_string(),
-            "base_url",
-        ));
-    }
-    if !base_url.is_empty() && reqwest::Url::parse(&base_url).is_err() {
-        return Err(validation(
-            "base_url must be a valid http(s) URL".to_string(),
             "base_url",
         ));
     }
@@ -210,7 +217,7 @@ pub async fn update_defectdojo_config(
             updated_at = NOW()
         "#,
     )
-    .bind(payload.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+    .bind(normalized_base_url.as_deref())
     .bind(cipher)
     .bind(nonce)
     .bind(payload.finding_scope.map(|s| s.as_db_str().to_string()))
@@ -415,6 +422,23 @@ pub async fn sync_defectdojo(
     let instance = "/api/v1/integrations/defectdojo/sync";
     auth.require(Permission::ManageExternalIntegrations, instance)?;
     let pool = require_db(&state, auth.request_id, instance)?;
+    let cfg = load_config(pool, &state.secret_box).await.map_err(|e| {
+        AppError::new(
+            DomainError::BadRequest(e),
+            auth.request_id,
+            Some(instance.to_string()),
+        )
+    })?;
+    if cfg.is_none() {
+        return Err(AppError::new(
+            DomainError::BadRequest(
+                "Integracja DefectDojo jest wyłączona lub niekompletna (wymagane: włączona integracja, Base URL i API Key)."
+                    .to_string(),
+            ),
+            auth.request_id,
+            Some(instance.to_string()),
+        ));
+    }
     let enqueued = enqueue_manual_sync(pool, payload.asset_group_id)
         .await
         .map_err(|e| {
@@ -591,29 +615,34 @@ pub async fn push_diff_to_defectdojo(
             if let Some(ref ov) = override_opt {
                 let _ = save_diff_dd_override(pool, diff_event_id, ov).await;
             }
-            let _ = sqlx::query(
-                r#"
-                INSERT INTO dd_outbox (kind, asset_group_id, diff_event_id, status, last_error)
-                SELECT 'diff_event', h.asset_group_id, de.id, 'pending', $2
-                FROM diff_events de
-                INNER JOIN hosts h ON h.id = de.host_id
-                WHERE de.id = $1
-                  AND NOT EXISTS (
-                      SELECT 1 FROM dd_outbox
-                      WHERE diff_event_id = $1 AND status IN ('pending', 'processing', 'sent')
-                  )
-                "#,
-            )
-            .bind(diff_event_id)
-            .bind(&e)
-            .execute(pool)
-            .await;
+            let is_transient = e.contains("timeout")
+                || e.contains("nie można nawiązać połączenia")
+                || e.contains("-> 5");
+            if is_transient {
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO dd_outbox (kind, asset_group_id, diff_event_id, status, last_error)
+                    SELECT 'diff_event', h.asset_group_id, de.id, 'pending', $2
+                    FROM diff_events de
+                    INNER JOIN hosts h ON h.id = de.host_id
+                    WHERE de.id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM dd_outbox
+                          WHERE diff_event_id = $1 AND status IN ('pending', 'processing', 'failed')
+                      )
+                    "#,
+                )
+                .bind(diff_event_id)
+                .bind(&e)
+                .execute(pool)
+                .await;
+            }
 
-            Ok(Json(DdPushDiffResponse {
-                diff_event_id,
-                enqueued: true,
-                note: format!("Zapisano modyfikację i zakolejkowano w outboxie ({e})"),
-            }))
+            Err(AppError::new(
+                DomainError::BadRequest(format!("push failed: {e}")),
+                auth.request_id,
+                Some(instance),
+            ))
         }
     }
 }
@@ -933,6 +962,7 @@ pub async fn retry_failed_dd_outbox(
         r#"
         UPDATE dd_outbox
         SET status = 'pending',
+            attempt_count = 0,
             next_retry_at = NOW(),
             last_error = NULL,
             updated_at = NOW()

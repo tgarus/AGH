@@ -33,6 +33,7 @@ export function IntegrationsView() {
   const [enabled, setEnabled] = useState(false);
   const [formMsg, setFormMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
   const [outboxPage, setOutboxPage] = useState(1);
   const [outboxPerPage, setOutboxPerPage] = useState(10);
 
@@ -65,7 +66,7 @@ export function IntegrationsView() {
 
   useEffect(() => {
     const cfg = configQuery.data;
-    if (cfg) {
+    if (cfg && !isDirty) {
       setBaseUrl(cfg.base_url);
       setAsiPublicUrl(cfg.asi_public_url ?? '');
       setScope(cfg.finding_scope as FindingScope);
@@ -73,7 +74,7 @@ export function IntegrationsView() {
       setPullInterval(cfg.pull_interval_minutes);
       setEnabled(cfg.enabled);
     }
-  }, [configQuery.data]);
+  }, [configQuery.data, isDirty]);
 
   const saveMutation = useMutation({
     mutationFn: async (overrides?: {
@@ -100,6 +101,7 @@ export function IntegrationsView() {
     },
     onSuccess: () => {
       setApiKey('');
+      setIsDirty(false);
       setFormMsg({ kind: 'ok', text: t('integrations.messages.saved') });
       void queryClient.invalidateQueries({ queryKey: ['dd-config'] });
     },
@@ -268,7 +270,10 @@ export function IntegrationsView() {
               <input
                 className={inputCls}
                 value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
+                onChange={(e) => {
+                  setIsDirty(true);
+                  setBaseUrl(e.target.value);
+                }}
                 placeholder="https://defectdojo.agh.edu.pl"
                 disabled={!canManage}
               />
@@ -278,7 +283,10 @@ export function IntegrationsView() {
               <input
                 className={inputCls}
                 value={asiPublicUrl}
-                onChange={(e) => setAsiPublicUrl(e.target.value)}
+                onChange={(e) => {
+                  setIsDirty(true);
+                  setAsiPublicUrl(e.target.value);
+                }}
                 placeholder="https://asi.agh.edu.pl"
                 disabled={!canManage}
               />
@@ -289,7 +297,10 @@ export function IntegrationsView() {
                 type="password"
                 className={inputCls}
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => {
+                  setIsDirty(true);
+                  setApiKey(e.target.value);
+                }}
                 placeholder={cfg?.has_api_key ? t('integrations.form.apiKeyKeep') : '••••••••'}
                 disabled={!canManage}
               />
@@ -299,7 +310,10 @@ export function IntegrationsView() {
               <select
                 className={inputCls}
                 value={scope}
-                onChange={(e) => setScope(e.target.value as FindingScope)}
+                onChange={(e) => {
+                  setIsDirty(true);
+                  setScope(e.target.value as FindingScope);
+                }}
                 disabled={!canManage}
               >
                 {(Object.keys(SCOPE_KEYS) as FindingScope[]).map((s) => (
@@ -317,7 +331,10 @@ export function IntegrationsView() {
                 max={1440}
                 className={inputCls}
                 value={pullInterval}
-                onChange={(e) => setPullInterval(Number(e.target.value))}
+                onChange={(e) => {
+                  setIsDirty(true);
+                  setPullInterval(Number(e.target.value));
+                }}
                 disabled={!canManage}
               />
             </div>
@@ -326,7 +343,10 @@ export function IntegrationsView() {
                 <input
                   type="checkbox"
                   checked={enabled}
-                  onChange={(e) => setEnabled(e.target.checked)}
+                  onChange={(e) => {
+                    setIsDirty(true);
+                    setEnabled(e.target.checked);
+                  }}
                   disabled={!canManage}
                 />
                 {t('integrations.form.enabled')}
@@ -335,7 +355,10 @@ export function IntegrationsView() {
                 <input
                   type="checkbox"
                   checked={autoPush}
-                  onChange={(e) => setAutoPush(e.target.checked)}
+                  onChange={(e) => {
+                    setIsDirty(true);
+                    setAutoPush(e.target.checked);
+                  }}
                   disabled={!canManage}
                 />
                 {t('integrations.form.autoPush')}

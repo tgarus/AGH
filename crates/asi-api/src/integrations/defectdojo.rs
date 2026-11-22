@@ -16,6 +16,25 @@ use chrono::{DateTime, Utc};
 pub const DD_TEST_TYPE_NAME: &str = "ASI Attack Surface Scan";
 pub const DD_PRODUCT_PREFIX: &str = "ASI: ";
 
+pub fn normalize_dd_base_url(raw: &str) -> Result<String, String> {
+    let mut cleaned = raw.trim().trim_end_matches('/').to_string();
+    if cleaned.is_empty() {
+        return Err("DefectDojo base_url is empty".to_string());
+    }
+    if cleaned.to_ascii_lowercase().ends_with("/api/v2") {
+        cleaned.truncate(cleaned.len().saturating_sub("/api/v2".len()));
+        cleaned = cleaned.trim_end_matches('/').to_string();
+    }
+    let parsed = reqwest::Url::parse(&cleaned)
+        .map_err(|e| format!("DefectDojo base_url must be a valid http(s) URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(
+            "DefectDojo base_url must use http:// or https:// with a valid host".to_string(),
+        );
+    }
+    Ok(cleaned)
+}
+
 #[derive(Clone)]
 pub struct DdClient {
     http: reqwest::Client,
@@ -25,10 +44,7 @@ pub struct DdClient {
 
 impl DdClient {
     pub fn new(base_url: &str, api_key: &str) -> Result<Self, String> {
-        let base_url = base_url.trim().trim_end_matches('/').to_string();
-        if base_url.is_empty() {
-            return Err("DefectDojo base_url is empty".to_string());
-        }
+        let base_url = normalize_dd_base_url(base_url)?;
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(30))
@@ -127,12 +143,25 @@ impl DdClient {
         if let Some(p) = page.results.into_iter().find(|p| p.name == name) {
             return Ok(p.id);
         }
-        // prod_type jest wymagany w starszych wersjach DD — bierzemy pierwszy dostepny.
-        let prod_type_id: Option<i32> = self
+        // prod_type jest wymagany w starszych wersjach DD — bierzemy pierwszy dostepny albo tworzymy domyslny.
+        let mut prod_type_id: Option<i32> = self
             .get_paginated::<DdProductType>("/product_types/?limit=1")
             .await
             .ok()
             .and_then(|page| page.results.into_iter().next().map(|t| t.id));
+        if prod_type_id.is_none() {
+            prod_type_id = self
+                .post_json::<_, DdProductType>(
+                    "/product_types/",
+                    &serde_json::json!({
+                        "name": "ASI Attack Surface",
+                        "description": "Default product type created by ASI"
+                    }),
+                )
+                .await
+                .ok()
+                .map(|pt| pt.id);
+        }
         let mut payload = serde_json::json!({
             "name": name,
             "description": format!("Attack surface asset group '{group_name}' — {group_description}"),
@@ -182,7 +211,10 @@ impl DdClient {
         finished_at: Option<DateTime<Utc>>,
     ) -> Result<i32, String> {
         let name = format!("ASI scan {run_label}");
-        let path = format!("/engagements/?name={}", urlencode(&name));
+        let path = format!(
+            "/engagements/?name={}&product={product_id}",
+            urlencode(&name)
+        );
         let page: DdPaginated<DdEngagement> = self.get_paginated(&path).await?;
         if let Some(e) = page
             .results
@@ -191,11 +223,9 @@ impl DdClient {
         {
             return Ok(e.id);
         }
+        let end_dt = finished_at.unwrap_or_else(chrono::Utc::now).max(started_at);
         let target_start = started_at.format("%Y-%m-%d").to_string();
-        let target_end = finished_at
-            .unwrap_or_else(chrono::Utc::now)
-            .format("%Y-%m-%d")
-            .to_string();
+        let target_end = end_dt.format("%Y-%m-%d").to_string();
         let payload = DdEngagementCreate {
             name,
             product: product_id,
@@ -229,7 +259,10 @@ impl DdClient {
         finished_at: Option<DateTime<Utc>>,
     ) -> Result<i32, String> {
         let title = format!("ASI run {run_label}");
-        let path = format!("/tests/?title={}", urlencode(&title));
+        let path = format!(
+            "/tests/?title={}&engagement={engagement_id}",
+            urlencode(&title)
+        );
         let page: DdPaginated<DdTest> = self.get_paginated(&path).await?;
         if let Some(t) = page
             .results
@@ -238,11 +271,9 @@ impl DdClient {
         {
             return Ok(t.id);
         }
-        let target_start = started_at.format("%Y-%m-%d").to_string();
-        let target_end = finished_at
-            .unwrap_or_else(chrono::Utc::now)
-            .format("%Y-%m-%d")
-            .to_string();
+        let end_dt = finished_at.unwrap_or_else(chrono::Utc::now).max(started_at);
+        let target_start = started_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let target_end = end_dt.format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let payload = DdTestCreate {
             title,
             test_type: test_type_id,
@@ -280,23 +311,29 @@ impl DdClient {
         Ok(created.id)
     }
 
-    /// Pull statusow findingow po id (batch `id__in`).
+    /// Pull statusow findingow po id (batch `id__in` w paczkach po 50).
     pub async fn findings_by_ids(&self, ids: &[i32]) -> Result<Vec<DdFinding>, String> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let joined = ids.iter().map(i32::to_string).collect::<Vec<_>>().join(",");
         let mut all = Vec::new();
-        let mut offset = 0_i64;
-        loop {
-            let path = format!("/findings/?id__in={joined}&limit=100&offset={offset}");
-            let page: DdPaginated<DdFinding> = self.get_paginated(&path).await?;
-            let n = page.results.len() as i64;
-            all.extend(page.results);
-            if n < 100 || offset + n >= page.count {
-                break;
+        for chunk in ids.chunks(50) {
+            let joined = chunk
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut offset = 0_i64;
+            loop {
+                let path = format!("/findings/?id__in={joined}&limit=100&offset={offset}");
+                let page: DdPaginated<DdFinding> = self.get_paginated(&path).await?;
+                let n = page.results.len() as i64;
+                all.extend(page.results);
+                if n < 100 || offset + n >= page.count {
+                    break;
+                }
+                offset += n;
             }
-            offset += n;
         }
         Ok(all)
     }
@@ -369,5 +406,19 @@ mod tests {
     fn client_rejects_empty_base_url() {
         assert!(DdClient::new("   ", "key").is_err());
         assert!(DdClient::new("https://dd.example/", "key").is_ok());
+    }
+
+    #[test]
+    fn normalize_base_url_strips_api_v2_and_validates_scheme() {
+        assert_eq!(
+            normalize_dd_base_url("http://127.0.0.1:8081/api/v2/").unwrap(),
+            "http://127.0.0.1:8081"
+        );
+        assert_eq!(
+            normalize_dd_base_url("  https://dd.agh.edu.pl/API/V2  ").unwrap(),
+            "https://dd.agh.edu.pl"
+        );
+        assert!(normalize_dd_base_url("ftp://dd.example").is_err());
+        assert!(normalize_dd_base_url("").is_err());
     }
 }

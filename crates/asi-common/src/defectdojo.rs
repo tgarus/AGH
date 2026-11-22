@@ -479,6 +479,20 @@ impl DdFindingUpsert {
         let mut val = serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({}));
         if let Some(obj) = val.as_object_mut() {
             obj.remove("custom_fields");
+            if obj
+                .get("component_name")
+                .is_some_and(serde_json::Value::is_null)
+            {
+                obj.remove("component_name");
+            }
+            if obj
+                .get("references")
+                .is_some_and(serde_json::Value::is_null)
+            {
+                obj.remove("references");
+            }
+            let clean_tags = sanitize_dd_tags(&self.tags);
+            obj.insert("tags".to_string(), serde_json::json!(clean_tags));
             if let Some(serde_json::Value::Object(extra)) = &self.custom_fields {
                 for (k, v) in extra {
                     let key = k.trim();
@@ -490,6 +504,43 @@ impl DdFindingUpsert {
         }
         val
     }
+}
+
+/// Normalizuje tagi DefectDojo: zamienia spacje/przecinki na `-`, deduplikuje i przycina do 200 znaków.
+#[must_use]
+pub fn sanitize_dd_tags(tags: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(tags.len());
+    for raw in tags {
+        let mut normalized = String::new();
+        let mut prev_dash = false;
+        for ch in raw.trim().chars() {
+            let mapped = if ch.is_whitespace() || ch == ',' {
+                '-'
+            } else {
+                ch
+            };
+            if mapped == '-' {
+                if !prev_dash {
+                    normalized.push('-');
+                    prev_dash = true;
+                }
+            } else {
+                normalized.push(mapped);
+                prev_dash = false;
+            }
+        }
+        let cleaned: String = normalized
+            .trim_matches('-')
+            .chars()
+            .take(200)
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        if !cleaned.is_empty() && !out.iter().any(|existing: &String| existing == &cleaned) {
+            out.push(cleaned);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -702,5 +753,38 @@ mod tests {
             ..f_active
         };
         assert_eq!(f_explicit.effective_status(), "Fixed");
+    }
+
+    #[test]
+    fn sanitize_tags_and_wire_json_omit_nulls() {
+        let raw_tags = vec![
+            "  asi ".to_string(),
+            "AGH Core, Prod".to_string(),
+            "AGH   Core,Prod".to_string(),
+            "---".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(sanitize_dd_tags(&raw_tags), vec!["asi", "AGH-Core-Prod"]);
+
+        let payload = DdFindingUpsert {
+            title: "Test finding".to_string(),
+            description: "Desc".to_string(),
+            severity: "Info".to_string(),
+            date: "2026-11-22".to_string(),
+            test: 1,
+            found_by: vec![77],
+            numerical_severity: "S0".to_string(),
+            unique_id_from_tool: "u-1".to_string(),
+            component_name: None,
+            references: None,
+            tags: raw_tags,
+            active: true,
+            verified: false,
+            ..Default::default()
+        };
+        let wire = payload.to_wire_json();
+        assert!(wire.get("component_name").is_none());
+        assert!(wire.get("references").is_none());
+        assert_eq!(wire["tags"], serde_json::json!(["asi", "AGH-Core-Prod"]));
     }
 }

@@ -54,7 +54,7 @@ pub fn spawn_dd_workers(
     (outbox, pull)
 }
 
-async fn process_outbox_due(state: &AppState) -> Result<(), String> {
+pub async fn process_outbox_due(state: &AppState) -> Result<(), String> {
     let Some(pool) = state.db.as_ref() else {
         return Ok(());
     };
@@ -80,8 +80,14 @@ async fn process_outbox_due(state: &AppState) -> Result<(), String> {
         SET status = 'processing', updated_at = NOW()
         WHERE id IN (
             SELECT id FROM dd_outbox
-            WHERE status IN ('pending', 'failed')
-              AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+            WHERE (
+                status = 'pending'
+                AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+            ) OR (
+                status = 'failed'
+                AND next_retry_at IS NOT NULL
+                AND next_retry_at <= NOW()
+            )
             ORDER BY created_at
             LIMIT 10
             FOR UPDATE SKIP LOCKED
@@ -222,15 +228,27 @@ async fn push_manual_group(
     .await
     .map_err(|e| e.to_string())?;
     let mut n = 0_usize;
+    let mut last_err: Option<String> = None;
     for d in diff_ids {
-        if push_diff_event(pool, cfg, client, d).await.is_ok() {
-            n += 1;
+        match push_diff_event(pool, cfg, client, d).await {
+            Ok(_) => n += 1,
+            Err(e) => {
+                if !e.contains("poza scope") {
+                    last_err = Some(e);
+                }
+            }
         }
     }
     if cfg.finding_scope == asi_common::defectdojo::DdFindingScope::Inventory {
-        n += crate::integrations::push::push_group_inventory_hosts(pool, cfg, client, group_id)
+        match crate::integrations::push::push_group_inventory_hosts(pool, cfg, client, group_id)
             .await
-            .unwrap_or(0);
+        {
+            Ok(inv_n) => n += inv_n,
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if let Some(e) = last_err {
+        return Err(e);
     }
     Ok(format!("group {group_id}: pushed {n} findings (no runs)"))
 }

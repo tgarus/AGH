@@ -167,7 +167,10 @@ pub async fn enqueue_manual_sync(
         None => sqlx::query(
             r#"INSERT INTO dd_outbox (kind, asset_group_id)
                SELECT 'manual_sync', ag.id FROM asset_groups ag
-               WHERE EXISTS (SELECT 1 FROM asset_group_targets t WHERE t.asset_group_id = ag.id AND t.target_type <> 'exclude_cidr')
+               WHERE (
+                   EXISTS (SELECT 1 FROM asset_group_targets t WHERE t.asset_group_id = ag.id AND t.target_type <> 'exclude_cidr')
+                   OR EXISTS (SELECT 1 FROM hosts h WHERE h.asset_group_id = ag.id)
+               )
                AND NOT EXISTS (SELECT 1 FROM dd_outbox o WHERE o.asset_group_id = ag.id AND o.kind='manual_sync' AND o.status IN ('pending','processing'))
                RETURNING id"#,
         )
@@ -374,7 +377,12 @@ async fn ensure_dd_group_hierarchy(
         .await?;
     sqlx::query(
         r#"UPDATE asset_groups
-           SET external_refs = jsonb_set(COALESCE(external_refs,'{}'::jsonb), '{defectdojo,product_id}', to_jsonb($2::int))
+           SET external_refs = jsonb_set(
+               COALESCE(external_refs, '{}'::jsonb),
+               '{defectdojo}',
+               COALESCE(external_refs->'defectdojo', '{}'::jsonb) || jsonb_build_object('product_id', $2::int),
+               TRUE
+           )
            WHERE id = $1"#,
     )
     .bind(params.group_id)
@@ -408,7 +416,12 @@ async fn ensure_dd_group_hierarchy(
     if let Some(run_id) = params.scan_run_id {
         sqlx::query(
             r#"UPDATE scan_runs
-               SET external_refs = jsonb_set(jsonb_set(COALESCE(external_refs,'{}'::jsonb), '{defectdojo,engagement_id}', to_jsonb($2::int)), '{defectdojo,test_id}', to_jsonb($3::int))
+               SET external_refs = jsonb_set(
+                   COALESCE(external_refs, '{}'::jsonb),
+                   '{defectdojo}',
+                   COALESCE(external_refs->'defectdojo', '{}'::jsonb) || jsonb_build_object('engagement_id', $2::int, 'test_id', $3::int),
+                   TRUE
+               )
                WHERE id = $1"#,
         )
         .bind(run_id)
@@ -539,9 +552,11 @@ async fn load_host_push_row(pool: &PgPool, host_id: Uuid) -> Result<HostPushRow,
         SELECT h.id, h.ip_addr::text, h.status, h.is_unstable, h.is_probable_tarpit,
                h.auto_tags, h.manual_tags, h.notes, h.owner_hint,
                COALESCE(h.external_refs, '{}'::jsonb) AS external_refs,
-               ag.id AS group_id, ag.name AS group_name, ag.description AS group_description
+               COALESCE(ag.id, h.asset_group_id) AS group_id,
+               COALESCE(ag.name, 'default') AS group_name,
+               ag.description AS group_description
         FROM hosts h
-        JOIN asset_groups ag ON ag.id = h.asset_group_id
+        LEFT JOIN asset_groups ag ON ag.id = h.asset_group_id
         WHERE h.id = $1
         "#,
     )
@@ -832,6 +847,150 @@ pub async fn save_host_dd_override(
     Ok(())
 }
 
+struct HostDdLinkParams<'a> {
+    host_id: Uuid,
+    group_id: Uuid,
+    scan_run_id: Option<Uuid>,
+    product_id: i32,
+    engagement_id: i32,
+    test_id: i32,
+    finding_id: i32,
+    tags: &'a [String],
+}
+
+async fn save_host_dd_link_and_ref(
+    pool: &PgPool,
+    params: HostDdLinkParams<'_>,
+) -> Result<(), String> {
+    sqlx::query(
+        r#"UPDATE hosts
+           SET external_refs = jsonb_set(
+               COALESCE(external_refs, '{}'::jsonb),
+               '{defectdojo}',
+               COALESCE(external_refs->'defectdojo', '{}'::jsonb) || jsonb_build_object('finding_id', $2::int),
+               TRUE
+           )
+           WHERE id = $1"#,
+    )
+    .bind(params.host_id)
+    .bind(params.finding_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let tags_json = serde_json::to_value(params.tags).unwrap_or_default();
+    sqlx::query(
+        r#"
+        INSERT INTO dd_links (diff_event_id, host_id, asset_group_id, scan_run_id,
+                              dd_product_id, dd_engagement_id, dd_test_id, dd_finding_id,
+                              dd_finding_status, dd_tags, last_pushed_at)
+        VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, 'active', $8, NOW())
+        ON CONFLICT (host_id) WHERE diff_event_id IS NULL AND host_id IS NOT NULL DO UPDATE SET
+            dd_product_id = EXCLUDED.dd_product_id,
+            dd_engagement_id = EXCLUDED.dd_engagement_id,
+            dd_test_id = EXCLUDED.dd_test_id,
+            dd_finding_id = EXCLUDED.dd_finding_id,
+            dd_tags = EXCLUDED.dd_tags,
+            last_pushed_at = NOW()
+        "#,
+    )
+    .bind(params.host_id)
+    .bind(params.group_id)
+    .bind(params.scan_run_id)
+    .bind(params.product_id)
+    .bind(params.engagement_id)
+    .bind(params.test_id)
+    .bind(params.finding_id)
+    .bind(tags_json)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+struct InventoryPushContext<'a> {
+    group_id: Uuid,
+    scan_run_id: Option<Uuid>,
+    product_id: i32,
+    engagement_id: i32,
+    test_type_id: i32,
+    test_id: i32,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+async fn push_active_inventory_hosts(
+    pool: &PgPool,
+    cfg: &LoadedDdConfig,
+    client: &DdClient,
+    ctx: InventoryPushContext<'_>,
+) -> Result<(usize, Option<String>), String> {
+    let hosts: Vec<Uuid> = sqlx::query_scalar(
+        r#"SELECT id FROM hosts
+           WHERE asset_group_id = $1 AND status = 'active' ORDER BY ip_addr"#,
+    )
+    .bind(ctx.group_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut pushed = 0_usize;
+    let mut last_err: Option<String> = None;
+    for host_id in hosts {
+        let host = match load_host_push_row(pool, host_id).await {
+            Ok(h) => h,
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        };
+        let mut payload = match build_default_host_payload(
+            pool,
+            &cfg.asi_public_url,
+            &host,
+            ctx.test_id,
+            ctx.test_type_id,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        };
+        if let Some(ov) = extract_saved_override(&host.external_refs) {
+            payload.apply_override(&ov);
+        }
+        match client.upsert_finding(&payload).await {
+            Ok(fid) => {
+                if let Err(e) = save_host_dd_link_and_ref(
+                    pool,
+                    HostDdLinkParams {
+                        host_id,
+                        group_id: ctx.group_id,
+                        scan_run_id: ctx.scan_run_id,
+                        product_id: ctx.product_id,
+                        engagement_id: ctx.engagement_id,
+                        test_id: ctx.test_id,
+                        finding_id: fid,
+                        tags: &payload.tags,
+                    },
+                )
+                .await
+                {
+                    last_err = Some(e);
+                } else {
+                    pushed += 1;
+                }
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+    Ok((pushed, last_err))
+}
+
 pub async fn push_single_host(
     pool: &PgPool,
     secret_box: &SecretBox,
@@ -899,40 +1058,20 @@ pub async fn push_single_host(
         }
     };
 
-    let _ = sqlx::query(
-        r#"UPDATE hosts SET external_refs = jsonb_set(COALESCE(external_refs,'{}'::jsonb), '{defectdojo,finding_id}', to_jsonb($2::int)) WHERE id = $1"#,
+    save_host_dd_link_and_ref(
+        pool,
+        HostDdLinkParams {
+            host_id,
+            group_id: host.group_id,
+            scan_run_id: run_id,
+            product_id,
+            engagement_id,
+            test_id,
+            finding_id,
+            tags: &payload.tags,
+        },
     )
-    .bind(host_id)
-    .bind(finding_id)
-    .execute(pool)
-    .await;
-
-    let tags_json = serde_json::to_value(&payload.tags).unwrap_or_default();
-    let _ = sqlx::query(
-        r#"
-        INSERT INTO dd_links (diff_event_id, host_id, asset_group_id, scan_run_id,
-                              dd_product_id, dd_engagement_id, dd_test_id, dd_finding_id,
-                              dd_finding_status, dd_tags, last_pushed_at)
-        VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, 'active', $8, NOW())
-        ON CONFLICT (host_id) WHERE diff_event_id IS NULL AND host_id IS NOT NULL DO UPDATE SET
-            dd_product_id = EXCLUDED.dd_product_id,
-            dd_engagement_id = EXCLUDED.dd_engagement_id,
-            dd_test_id = EXCLUDED.dd_test_id,
-            dd_finding_id = EXCLUDED.dd_finding_id,
-            dd_tags = EXCLUDED.dd_tags,
-            last_pushed_at = NOW()
-        "#,
-    )
-    .bind(host_id)
-    .bind(host.group_id)
-    .bind(run_id)
-    .bind(product_id)
-    .bind(engagement_id)
-    .bind(test_id)
-    .bind(finding_id)
-    .bind(tags_json)
-    .execute(pool)
-    .await;
+    .await?;
 
     let _ = crate::notifications::worker::enqueue_webhook_event(
         pool,
@@ -984,7 +1123,7 @@ pub async fn push_scan_run(
     // Inventory: aktywne hosty grupy jako findingi info (unique_id_from_tool = "host:<id>").
     if cfg.finding_scope == DdFindingScope::Inventory {
         let run_row = sqlx::query(
-            r#"SELECT asset_group_id, started_at, finished_at, COALESCE(external_refs,'{}'::jsonb)
+            r#"SELECT asset_group_id, started_at, finished_at
                FROM scan_runs WHERE id = $1"#,
         )
         .bind(scan_run_id)
@@ -995,85 +1134,60 @@ pub async fn push_scan_run(
             let group_id: Uuid = run.get("asset_group_id");
             let started: DateTime<Utc> = run.get("started_at");
             let finished: Option<DateTime<Utc>> = run.get("finished_at");
-            let refs: serde_json::Value = run.get("external_refs");
-            let group_name: String =
-                sqlx::query_scalar("SELECT name FROM asset_groups WHERE id = $1")
+            let group_row: (String, Option<String>) =
+                sqlx::query_as("SELECT name, description FROM asset_groups WHERE id = $1")
                     .bind(group_id)
                     .fetch_one(pool)
                     .await
                     .map_err(|e| e.to_string())?;
-            let product_id = client.ensure_product(&group_name, "").await?;
-            let run_label = scan_run_id.to_string()[..8].to_string();
-            let engagement_id = client
-                .ensure_engagement(product_id, &run_label, started, finished)
-                .await?;
-            let test_type_id = client.ensure_test_type().await?;
-            let test_id = client
-                .ensure_test(engagement_id, test_type_id, &run_label, started, finished)
-                .await?;
-
-            let hosts: Vec<Uuid> = sqlx::query_scalar(
-                r#"SELECT id FROM hosts
-                   WHERE asset_group_id = $1 AND status = 'active' ORDER BY ip_addr"#,
+            let (product_id, engagement_id, test_type_id, test_id) = ensure_dd_group_hierarchy(
+                client,
+                pool,
+                DdGroupHierarchyParams {
+                    group_id,
+                    group_name: &group_row.0,
+                    group_description: group_row.1.as_deref(),
+                    scan_run_id: Some(scan_run_id),
+                    started_at: started,
+                    finished_at: finished,
+                },
             )
-            .bind(group_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-            for host_id in hosts {
-                if let Ok(host) = load_host_push_row(pool, host_id).await {
-                    if let Ok(mut payload) = build_default_host_payload(
-                        pool,
-                        &cfg.asi_public_url,
-                        &host,
-                        test_id,
-                        test_type_id,
-                    )
-                    .await
-                    {
-                        if let Some(ov) = extract_saved_override(&host.external_refs) {
-                            payload.apply_override(&ov);
-                        }
-                        if let Ok(fid) = client.upsert_finding(&payload).await {
-                            let _ = sqlx::query(
-                                r#"UPDATE hosts SET external_refs = jsonb_set(COALESCE(external_refs,'{}'::jsonb), '{defectdojo,finding_id}', to_jsonb($2::int)) WHERE id = $1"#,
-                            )
-                            .bind(host_id)
-                            .bind(fid)
-                            .execute(pool)
-                            .await;
-                            let tags_json = serde_json::to_value(&payload.tags).unwrap_or_default();
-                            let _ = sqlx::query(
-                                r#"
-                                INSERT INTO dd_links (diff_event_id, host_id, asset_group_id, scan_run_id,
-                                                      dd_product_id, dd_engagement_id, dd_test_id, dd_finding_id,
-                                                      dd_finding_status, dd_tags, last_pushed_at)
-                                VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, 'active', $8, NOW())
-                                ON CONFLICT (host_id) WHERE diff_event_id IS NULL AND host_id IS NOT NULL DO UPDATE SET
-                                    dd_product_id = EXCLUDED.dd_product_id,
-                                    dd_engagement_id = EXCLUDED.dd_engagement_id,
-                                    dd_test_id = EXCLUDED.dd_test_id,
-                                    dd_finding_id = EXCLUDED.dd_finding_id,
-                                    dd_tags = EXCLUDED.dd_tags,
-                                    last_pushed_at = NOW()
-                                "#,
-                            )
-                            .bind(host_id)
-                            .bind(group_id)
-                            .bind(scan_run_id)
-                            .bind(product_id)
-                            .bind(engagement_id)
-                            .bind(test_id)
-                            .bind(fid)
-                            .bind(tags_json)
-                            .execute(pool)
-                            .await;
-                        }
-                    }
-                }
+            .await?;
+
+            let (inv_pushed, inv_err) = push_active_inventory_hosts(
+                pool,
+                cfg,
+                client,
+                InventoryPushContext {
+                    group_id,
+                    scan_run_id: Some(scan_run_id),
+                    product_id,
+                    engagement_id,
+                    test_type_id,
+                    test_id,
+                    _marker: std::marker::PhantomData,
+                },
+            )
+            .await?;
+            pushed += inv_pushed;
+            if let Some(e) = inv_err {
+                last_err = Some(e);
             }
             let _ = client.close_engagement(engagement_id).await;
-            let _ = refs;
+        }
+    } else if last_err.is_none() {
+        let eng_id_raw: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT external_refs->'defectdojo'->>'engagement_id' FROM scan_runs WHERE id = $1",
+        )
+        .bind(scan_run_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+        if let Some(Some(eid_str)) = eng_id_raw {
+            if let Ok(eid) = eid_str.parse::<i32>() {
+                let _ = client.close_engagement(eid).await;
+            }
         }
     }
 
@@ -1125,61 +1239,23 @@ pub async fn push_group_inventory_hosts(
     )
     .await?;
 
-    let host_ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM hosts WHERE asset_group_id = $1 AND status = 'active' ORDER BY ip_addr",
+    let (pushed, last_err) = push_active_inventory_hosts(
+        pool,
+        cfg,
+        client,
+        InventoryPushContext {
+            group_id,
+            scan_run_id: None,
+            product_id,
+            engagement_id,
+            test_type_id,
+            test_id,
+            _marker: std::marker::PhantomData,
+        },
     )
-    .bind(group_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let mut pushed = 0_usize;
-    for host_id in host_ids {
-        if let Ok(host) = load_host_push_row(pool, host_id).await {
-            if let Ok(mut payload) =
-                build_default_host_payload(pool, &cfg.asi_public_url, &host, test_id, test_type_id)
-                    .await
-            {
-                if let Some(ov) = extract_saved_override(&host.external_refs) {
-                    payload.apply_override(&ov);
-                }
-                if let Ok(fid) = client.upsert_finding(&payload).await {
-                    pushed += 1;
-                    let _ = sqlx::query(
-                        r#"UPDATE hosts SET external_refs = jsonb_set(COALESCE(external_refs,'{}'::jsonb), '{defectdojo,finding_id}', to_jsonb($2::int)) WHERE id = $1"#,
-                    )
-                    .bind(host_id)
-                    .bind(fid)
-                    .execute(pool)
-                    .await;
-                    let tags_json = serde_json::to_value(&payload.tags).unwrap_or_default();
-                    let _ = sqlx::query(
-                        r#"
-                        INSERT INTO dd_links (diff_event_id, host_id, asset_group_id, scan_run_id,
-                                              dd_product_id, dd_engagement_id, dd_test_id, dd_finding_id,
-                                              dd_finding_status, dd_tags, last_pushed_at)
-                        VALUES (NULL, $1, $2, NULL, $3, $4, $5, $6, 'active', $7, NOW())
-                        ON CONFLICT (host_id) WHERE diff_event_id IS NULL AND host_id IS NOT NULL DO UPDATE SET
-                            dd_product_id = EXCLUDED.dd_product_id,
-                            dd_engagement_id = EXCLUDED.dd_engagement_id,
-                            dd_test_id = EXCLUDED.dd_test_id,
-                            dd_finding_id = EXCLUDED.dd_finding_id,
-                            dd_tags = EXCLUDED.dd_tags,
-                            last_pushed_at = NOW()
-                        "#,
-                    )
-                    .bind(host_id)
-                    .bind(group_id)
-                    .bind(product_id)
-                    .bind(engagement_id)
-                    .bind(test_id)
-                    .bind(fid)
-                    .bind(tags_json)
-                    .execute(pool)
-                    .await;
-                }
-            }
-        }
+    .await?;
+    if let Some(e) = last_err {
+        return Err(e);
     }
     Ok(pushed)
 }
