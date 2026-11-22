@@ -1,0 +1,39 @@
+[Unit]
+Description=Attack Surface Intelligence Worker (asi-worker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=asi-worker
+Group=asi-worker
+EnvironmentFile=/etc/asi/asi-worker.env
+ExecStart=/usr/local/bin/asi-worker
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+TimeoutStopSec=15s
+
+# Minimal Linux network privileges for raw sockets (Naabu / Nmap SYN scan)
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+
+# Filesystem & kernel hardening
+# Note (Standard 05 §3): AmbientCapabilities are inherited across execve even with NoNewPrivileges=yes, but file capabilities (setcap) on external scanner binaries are ignored. Verify naabu/nmap raw socket execution in your target kernel/distro.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/asi-worker
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK AF_PACKET
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryMax=2G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

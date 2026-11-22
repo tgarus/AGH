@@ -1,0 +1,40 @@
+[package]
+name = "asi-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+asi-common = { path = "../asi-common" }
+base64.workspace = true
+chrono.workspace = true
+dns-lookup.workspace = true
+dotenvy.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+ipnetwork.workspace = true
+quick-xml.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+x509-parser.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

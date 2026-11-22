@@ -1,0 +1,108 @@
+name: ASI CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-check:
+    name: Rust fmt, clippy & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  db-migrations:
+    name: Verify PostgreSQL SQLx migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: asi
+          POSTGRES_PASSWORD: asi_ci_password
+          POSTGRES_DB: asi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply migrations cleanly via asi-api
+        env:
+          DATABASE_URL: postgres://asi:asi_ci_password@127.0.0.1:5432/asi
+          ASI_AUTO_MIGRATE: "true"
+          ASI_JWT_SECRET: ci-only-secret-key-at-least-32-bytes-long
+          ASI_MASTER_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+        run: |
+          cargo run -p asi-api -- --migrate-only
+
+  db-integration-tests:
+    name: Live-DB integration tests (incl. DefectDojo Phase 6)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: asi
+          POSTGRES_PASSWORD: asi_ci_password
+          POSTGRES_DB: asi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run DB-backed tests (migracje + flow Faz 2-5 + DefectDojo)
+        env:
+          DATABASE_URL: postgres://asi:asi_ci_password@127.0.0.1:5432/asi
+          ASI_JWT_SECRET: ci-only-secret-key-at-least-32-bytes-long
+          ASI_MASTER_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+        run: |
+          cargo test --workspace -- --include-ignored
+
+  openapi-and-ui:
+    name: OpenAPI drift check & UI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Export OpenAPI & verify ui codegen
+        run: |
+          cargo run -p asi-api -- --export-openapi docs/openapi.json
+          cd ui
+          npm ci
+          npm run gen:api
+          npm run check:i18n
+          npm run typecheck
+          npm run lint
+          npm run build
+          cd ..
+          git diff --exit-code docs/openapi.json ui/src/api/schema.d.ts

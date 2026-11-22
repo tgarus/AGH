@@ -1,0 +1,67 @@
+[workspace]
+members = [
+    "crates/asi-common",
+    "crates/asi-api",
+    "crates/asi-worker",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+authors = ["AGH Information Security Center"]
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[workspace.dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+argon2 = "0.5"
+async-trait = "0.1"
+axum = { version = "0.7", features = ["macros"] }
+axum-extra = { version = "0.9", features = ["cookie"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+dns-lookup = "2"
+dotenvy = "0.15"
+futures-util = "0.3"
+flate2 = "1"
+hex = "0.4"
+http = "1"
+http-body-util = "0.1"
+ipnetwork = { version = "0.20", features = ["serde"] }
+jsonwebtoken = "9"
+libc = "0.2"
+quick-xml = "0.37"
+rand = "0.8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "ipnetwork", "migrate", "macros"] }
+tar = "0.4"
+thiserror = "2"
+time = "0.3"
+tokio = { version = "1.41", features = ["full"] }
+tokio-rustls = "0.26"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "request-id", "util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+x509-parser = "0.16"

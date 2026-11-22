@@ -1,0 +1,132 @@
+services:
+  asi-db:
+    image: postgres:16-alpine
+    container_name: asi-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-asi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-asi_dev_password_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-asi}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - asi_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-asi} -d ${POSTGRES_DB:-asi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mock-web-standard:
+    build: ./mock-lab/web-standard
+    container_name: asi-mock-web-standard
+    networks:
+      asi_mock_lab:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "127.0.0.1:18080:80"
+      - "127.0.0.1:18443:443"
+
+  mock-nonstandard-http:
+    build: ./mock-lab/nonstandard-http
+    container_name: asi-mock-nonstandard-http
+    networks:
+      asi_mock_lab:
+        ipv4_address: 172.28.0.11
+    ports:
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:9443:9443"
+
+  mock-multivhost:
+    build: ./mock-lab/multivhost
+    container_name: asi-mock-multivhost
+    networks:
+      asi_mock_lab:
+        ipv4_address: 172.28.0.12
+    ports:
+      - "127.0.0.1:18081:80"
+      - "127.0.0.1:18444:443"
+
+  mock-admin-staging:
+    build: ./mock-lab/admin-staging
+    container_name: asi-mock-admin-staging
+    networks:
+      asi_mock_lab:
+        ipv4_address: 172.28.0.13
+    ports:
+      - "127.0.0.1:18082:8080"
+
+  mock-flapping-host:
+    build: ./mock-lab/flapping-host
+    container_name: asi-mock-flapping-host
+    networks:
+      asi_mock_lab:
+        ipv4_address: 172.28.0.14
+    ports:
+      - "127.0.0.1:19099:9099"
+
+  mock-tarpit-host:
+    build: ./mock-lab/tarpit-host
+    container_name: asi-mock-tarpit-host
+    networks:
+      asi_mock_lab:
+        ipv4_address: 172.28.0.15
+
+  # ---------------------------------------------------------------------------
+  # Faza 6 (ADR-0008): lokalny DefectDojo TYLKO z profilem "dd" (ciężkie obrazy):
+  #   docker compose -f deploy/docker-compose.dev.yml --profile dd up -d
+  #   docker compose -f deploy/docker-compose.dev.yml --profile dd run --rm defectdojo ./manage.py migrate
+  #   docker compose -f deploy/docker-compose.dev.yml --profile dd run --rm defectdojo ./manage.py createsuperuser
+  # UI DefectDojo: http://127.0.0.1:8081  (API v2: /api/v2, auth: Token <api_key>)
+  # ---------------------------------------------------------------------------
+  dd-db:
+    image: postgres:16-alpine
+    container_name: asi-dd-db
+    profiles: ["dd"]
+    environment:
+      POSTGRES_USER: dd
+      POSTGRES_PASSWORD: dd_dev_password_change_me
+      POSTGRES_DB: defectdojo
+    volumes:
+      - asi_dd_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dd -d defectdojo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  dd-redis:
+    image: redis:7-alpine
+    container_name: asi-dd-redis
+    profiles: ["dd"]
+
+  defectdojo:
+    image: defectdojo/defectdojo-django:latest
+    container_name: asi-defectdojo
+    profiles: ["dd"]
+    depends_on:
+      dd-db:
+        condition: service_healthy
+      dd-redis:
+        condition: service_started
+    environment:
+      DD_DATABASE_URL: postgres://dd:dd_dev_password_change_me@dd-db:5432/defectdojo
+      DD_SECRET_KEY: dev-only-dd-secret-key-change-me-0123456789abcdef
+      DD_CREDENTIAL_AES_256_KEY: dev-only-aes-256-key-32chars-long!!!
+      DD_ALLOWED_HOSTS: "*"
+      DD_DEBUG: "True"
+      DD_CELERY_BROKER_URL: redis://dd-redis:6379/0
+    ports:
+      # obraz defectdojo nasłuchuje uWSGI na porcie 8081 wewnątrz kontenera
+      - "127.0.0.1:8081:8081"
+
+volumes:
+  asi_pgdata:
+  asi_dd_pgdata:
+
+networks:
+  asi_mock_lab:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
